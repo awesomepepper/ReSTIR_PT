@@ -1,0 +1,56 @@
+############################################################################
+# Copyright (c) 2015-24, NVIDIA CORPORATION. All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#  * Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+#  * Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#  * Neither the name of NVIDIA CORPORATION nor the names of its
+#    contributors may be used to endorse or promote products derived
+#    from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS "AS IS" AND ANY
+# EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR
+# CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+# EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+# PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
+# PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY
+# OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+###########################################################################
+
+# Load FBX
+sceneBuilder.importScene('animated_cubes.fbx')
+
+# Add cameras
+frontCamera = Camera("FrontCamera")
+frontCamera.position = float3(-132.369202,39.946095,-0.077735)
+frontCamera.target = float3(-131.460236,39.530037,-0.051646)
+frontCamera.up = float3(0.000857,1.000000,0.000025)
+sceneBuilder.addCamera(frontCamera)
+
+backCamera = Camera("BackCamera")
+backCamera.position = float3(93.750549,52.591274,-0.019235)
+backCamera.target = float3(92.815163,52.238049,-0.035865)
+backCamera.up = float3(0.000919,1.000000,0.000016)
+sceneBuilder.addCamera(backCamera)
+
+sceneBuilder.selectedCamera = sceneBuilder.cameras[0]
+
+# Change animation settings (Assimp does not automatically detect pre-/post-infinity settings)
+a = sceneBuilder.animations
+a[1].preInfinityBehavior = Animation.Behavior.Cycle # purple cube - Cycle
+a[1].postInfinityBehavior = Animation.Behavior.Cycle
+a[2].preInfinityBehavior = Animation.Behavior.Cycle # red cube - 5 sec fixed Cycle
+a[2].postInfinityBehavior = Animation.Behavior.Cycle
+a[3].preInfinityBehavior = Animation.Behavior.Linear # blue cube - Linear
+a[3].postInfinityBehavior = Animation.Behavior.Linear
+a[4].preInfinityBehavior = Animation.Behavior.Oscillate # pink cube - Oscillate
+a[4].postInfinityBehavior = Animation.Behavior.Oscillate
