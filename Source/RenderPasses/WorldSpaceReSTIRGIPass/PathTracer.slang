@@ -9,6 +9,7 @@ import Utils.Math.MathHelpers;
 import Utils.Geometry.GeometryHelpers;
 import Utils.Sampling.SampleGenerator;
 import Utils.Color.ColorHelpers;
+import Utils.Debug.PixelDebug;
 import Rendering.Lights.LightHelpers;
 import Rendering.Lights.EnvMapSampler;
 import Rendering.Lights.EmissiveLightSampler;
@@ -521,7 +522,10 @@ struct PathTracer
 
     void HandleHit(inout PathPayLoad pathState, HitInfo hit)
     {
+        printSetPixel(DispatchRaysIndex().xy);
         pathState.currentVertexIndex++;
+
+        print("Path Throughput", pathState.thp);
 
         const HitType hitType = hit.getType();
         const bool isTriangleHit = hitType == HitType::Triangle;
@@ -549,7 +553,7 @@ struct PathTracer
         // if (pathState.currentVertexIndex == 1)
         //     computeEmissive = false;
 
-        // 
+        //
         float misWeight = 1.f;
         if (computeEmissive && any(sd.emissive > 0.f))
         {
@@ -681,6 +685,7 @@ struct PathTracer
 
     void HandleMiss(inout PathPayLoad pathState)
     {
+        printSetPixel(DispatchRaysIndex().xy);
         pathState.SetTerminate();
 
         bool isLightSamplable = !pathState.IsDelta();

@@ -28,6 +28,7 @@
 #pragma once
 #include "Falcor.h"
 #include "Experimental/WorldSpaceReSTIRGI/WorldSpaceReSTIRGI.h"
+#include "Utils/Debug/PixelDebug.h"
 #include "Utils/Sampling/SampleGenerator.h"
 #include "Rendering/Lights/EmissiveUniformSampler.h"
 #include "Rendering/Lights/EnvMapSampler.h"
@@ -55,7 +56,8 @@ public:
     virtual void execute(RenderContext* pRenderContext, const RenderData& renderData) override;
     virtual void renderUI(Gui::Widgets& widget) override;
     virtual void setScene(RenderContext* pRenderContext, const Scene::SharedPtr& pScene) override;
-    virtual bool onMouseEvent(const MouseEvent& mouseEvent) override { return false; }
+    //virtual bool onMouseEvent(const MouseEvent& mouseEvent) override { return false; }
+    virtual bool onMouseEvent(const MouseEvent& mouseEvent) override;
     virtual bool onKeyEvent(const KeyboardEvent& keyEvent) override { return false; }
 
 private:
@@ -64,6 +66,7 @@ private:
     void UpdateProgram();
     void UpdateResource();
     Program::DefineList GetDefines();
+    bool renderDebugUI(Gui::Widgets& widget);
 
     void PrepareGIData(RenderContext* pRenderContext, const RenderData& renderData);
     void FinalShading(RenderContext* pRenderContext, const RenderData& renderData, uint currentInstance);
@@ -105,6 +108,7 @@ private:
     SampleGenerator::SharedPtr mpSampleGenerator;
     EnvMapSampler::SharedPtr mpEnvMapSampler;
     EmissiveLightSampler::SharedPtr mpEmissiveSampler;
+    PixelDebug::SharedPtr           mpPixelDebug;               ///< Utility class for pixel debugging (print in shaders).
 
     PTRuntimeParams params;
 

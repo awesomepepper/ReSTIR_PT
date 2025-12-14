@@ -78,6 +78,7 @@ WorldSpaceReSTIRGIPass::SharedPtr WorldSpaceReSTIRGIPass::create(RenderContext* 
 WorldSpaceReSTIRGIPass::WorldSpaceReSTIRGIPass()
 {
     mOptions = WorldSpaceReSTIRGI::Options::create();
+    mpPixelDebug = PixelDebug::create();
 }
 
 std::string WorldSpaceReSTIRGIPass::getDesc() { return kDesc; }
@@ -103,6 +104,9 @@ void WorldSpaceReSTIRGIPass::compile(RenderContext* pRenderContext, const Compil
 
 void WorldSpaceReSTIRGIPass::execute(RenderContext* pRenderContext, const RenderData& renderData)
 {
+    //mpPixelDebug->beginFrame(pRenderContext, params.frameDim);
+    //mpPixelDebug->endFrame(pRenderContext);
+
     auto& dict = renderData.getDictionary();
 
     const auto& pOutputColor = renderData[kOutputColor]->asTexture();
@@ -128,6 +132,8 @@ void WorldSpaceReSTIRGIPass::execute(RenderContext* pRenderContext, const Render
 
     params.frameDim = uint2(pOutputColor->getWidth(), pOutputColor->getHeight());
 
+    mpPixelDebug->beginFrame(pRenderContext, params.frameDim);
+
     for (uint32_t i = 0; i < reSTIRInstances.size(); i++)
     {
         params.currentGIInstance = i;
@@ -143,6 +149,8 @@ void WorldSpaceReSTIRGIPass::execute(RenderContext* pRenderContext, const Render
     }
 
     params.frameCount++;
+
+    mpPixelDebug->endFrame(pRenderContext);
 }
 
 void WorldSpaceReSTIRGIPass::renderUI(Gui::Widgets& widget)
@@ -171,7 +179,23 @@ void WorldSpaceReSTIRGIPass::renderUI(Gui::Widgets& widget)
         }
     }
 
-    runtimeDirty |= widget.var("11", pad, 0u, 2u);
+    //runtimeDirty |= renderDebugUI(widget);
+    //if (auto group = widget.group("Debugging", true))
+    //{
+    //    //dirty |= group.checkbox("Use fixed seed", mParams.useFixedSeed);
+    //    //group.tooltip("Forces a fixed random seed for each frame.\n\n"
+    //    //    "This should produce exactly the same image each frame, which can be useful for debugging.");
+    //    //if (mParams.useFixedSeed)
+    //    //{
+    //    //    dirty |= group.var("Seed", mParams.fixedSeed);
+    //    //}
+
+    //    mpPixelDebug->renderUI(group);
+    //}
+    auto group = widget.group("Debugging", true);
+    mpPixelDebug->renderUI(group);
+
+    //runtimeDirty |= widget.var("11", pad, 0u, 2u);
 
     if (staticDirty) mRecompile = true;
     bool dirty = staticDirty || runtimeDirty;
@@ -247,6 +271,11 @@ void WorldSpaceReSTIRGIPass::setScene(RenderContext* pRenderContext, const Scene
     }
 }
 
+bool WorldSpaceReSTIRGIPass::onMouseEvent(const MouseEvent& mouseEvent)
+{
+    return mpPixelDebug->onMouseEvent(mouseEvent);
+}
+
 void WorldSpaceReSTIRGIPass::UpdateProgram()
 {
     if (!mRecompile) return;
@@ -312,6 +341,26 @@ Program::DefineList WorldSpaceReSTIRGIPass::GetDefines()
     return defines;
 }
 
+bool WorldSpaceReSTIRGIPass::renderDebugUI(Gui::Widgets& widget)
+{
+    bool dirty = false;
+
+    if (auto group = widget.group("Debugging", true))
+    {
+        //dirty |= group.checkbox("Use fixed seed", mParams.useFixedSeed);
+        //group.tooltip("Forces a fixed random seed for each frame.\n\n"
+        //    "This should produce exactly the same image each frame, which can be useful for debugging.");
+        //if (mParams.useFixedSeed)
+        //{
+        //    dirty |= group.var("Seed", mParams.fixedSeed);
+        //}
+
+        mpPixelDebug->renderUI(group);
+    }
+
+    return dirty;
+}
+
 void WorldSpaceReSTIRGIPass::PrepareGIData(RenderContext* pRenderContext, const RenderData& renderData)
 {
     auto vars = mPathTracingPass.mpVars->getRootVar();
@@ -324,6 +373,8 @@ void WorldSpaceReSTIRGIPass::PrepareGIData(RenderContext* pRenderContext, const 
 
     vars["pathtracer"]["params"].setBlob(params);
     vars["gScene"] = mpScene->getParameterBlock();
+
+    mpPixelDebug->prepareProgram(mPathTracingPass.mpProgram, vars);
 
     if (mpEnvMapSampler) mpEnvMapSampler->setShaderData(vars["pathtracer"]["envMapSampler"]);
     if (mpEmissiveSampler) mpEmissiveSampler->setShaderData(vars["pathtracer"]["emissiveSampler"]);

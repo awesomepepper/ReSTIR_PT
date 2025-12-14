@@ -8,6 +8,7 @@ import Scene.Shading;
 import Utils.Math.MathHelpers;
 import Utils.Geometry.GeometryHelpers;
 import Utils.Sampling.SampleGenerator;
+import Utils.Debug.PixelDebug;
 import Rendering.Lights.LightHelpers;
 import Rendering.Lights.EnvMapSampler;
 import Rendering.Lights.EmissiveLightSampler;
@@ -45,6 +46,7 @@ struct SampleInitializer
         sample = {};
         rcData = {};
         HitInfo hit = HitInfo(vbuffer[pixel]);
+        printSetPixel(DispatchRaysIndex().xy);
 
         float3 primaryRayDir = gScene.camera.computeRayPinhole(pixel, pathtracer.params.frameDim).dir;
         float3 vColor = 0.f;

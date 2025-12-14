@@ -702,7 +702,7 @@ namespace Falcor
         }
         else
         {
-            logError("Unsupported slider type");
+            logError("Unsupported slider type1");
             return false;
         }
     }
@@ -738,7 +738,7 @@ namespace Falcor
         }
         else
         {
-            logError("Unsupported slider type");
+            logError("Unsupported slider type2");
             return false;
         }
     }
@@ -757,25 +757,29 @@ namespace Falcor
     template<typename T>
     bool GuiImpl::addVecVar(const char label[], T& var, typename T::value_type minVal, typename T::value_type maxVal, float step, bool sameLine, const char* displayFormat)
     {
-        if (std::is_same<T, int32_t>::value)
+        if constexpr (std::is_same<typename T::value_type, int32_t>::value || std::is_same<typename T::value_type, int>::value)
         {
             return addVecVarHelper(label, var, ImGuiDataType_S32, minVal, maxVal, step, sameLine, displayFormat);
         }
-        else if (std::is_same<T, uint32_t>::value)
+        else if constexpr (std::is_same<typename T::value_type, uint32_t>::value || std::is_same<typename T::value_type, unsigned int>::value)
         {
             return addVecVarHelper(label, var, ImGuiDataType_U32, minVal, maxVal, step, sameLine, displayFormat);
         }
-        else if (std::is_same<T, float>::value)
+        else if constexpr (std::is_same<typename T::value_type, float>::value)
         {
             return addVecVarHelper(label, var, ImGuiDataType_Float, minVal, maxVal, step, sameLine, displayFormat);
         }
-        else if (std::is_same<T, uint64_t>::value)
+        else if constexpr (std::is_same<typename T::value_type, uint64_t>::value)
         {
             return addVecVarHelper(label, var, ImGuiDataType_U64, minVal, maxVal, step, sameLine, displayFormat);
         }
+        else if constexpr (std::is_same<typename T::value_type, int64_t>::value)
+        {
+            return addVecVarHelper(label, var, ImGuiDataType_S64, minVal, maxVal, step, sameLine, displayFormat);
+        }
         else
         {
-            logError("Unsupported slider type");
+            logError("Unsupported slider type3");
             return false;
         }
     }
@@ -807,7 +811,7 @@ namespace Falcor
         }
         else
         {
-            logError("Unsupported slider type");
+            logError("Unsupported slider type4");
             return false;
         }
     }
