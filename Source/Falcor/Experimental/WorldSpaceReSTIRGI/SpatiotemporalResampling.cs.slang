@@ -15,7 +15,6 @@ import LoadShadingData;
 import HashBuildStructure;
 import ReconnectionData;
 
-
 struct ResampleManager
 {
     static const float largeFloat = 1e20f;
@@ -40,7 +39,7 @@ struct ResampleManager
     ByteAddressBuffer cellCounters;
 
     uint numInstance;
-    
+
     float depthThreshold = 0.01f;
     float normalThreshold = 0.8f;
 
@@ -48,7 +47,6 @@ struct ResampleManager
     float3 cameraPrePos;
 
     GIParameter params;
-
 
     uint ToLinearIndex(uint2 pixel)
     {
@@ -93,11 +91,11 @@ struct ResampleManager
 
         float3 dir = normalize(dst - origin);
         Ray ray = Ray(origin, dir, 0.001, 0.999 * length(dst - origin));
-        SceneRayQuery < 1 > sceneQuery;
+        SceneRayQuery<1> sceneQuery;
         bool V = sceneQuery.traceVisibilityRay(ray.toRayDesc(), RAY_FLAG_NONE, 0xff);
         return V;
     }
- 
+
     void execute(uint2 pixel)
     {
         // get shadingdata
@@ -115,14 +113,14 @@ struct ResampleManager
 
         // get sample
         Reservoir initialSample = initialReservoirs[currentIDx];
-        if ( /*IgnoreReSTIRGI(sd) */sd.linearRoughness < roughnessThreshold && false)
+        if (/*IgnoreReSTIRGI(sd) */ sd.linearRoughness < roughnessThreshold && false)
         {
             SetReservoirs(currentReservoirs, currentIDx, 0, params.frameDim.x * params.frameDim.y, initialSample);
             SetReservoirs(currentReservoirs, currentIDx, 1, params.frameDim.x * params.frameDim.y, initialSample);
             return;
         }
 
-        //get pre sample
+        // get pre sample
         float4 preClip = mul(float4(sd1.posW, 1.f), prevViewProj);
         float3 preScreen = preClip.xyz / preClip.w;
         float2 preUV = preScreen.xy * float2(0.5f, -0.5f) + 0.5f;
@@ -130,6 +128,8 @@ struct ResampleManager
         uint preIDx = ToLinearIndex(preID);
 
         bool isPreValid = params.frameCount > 0 && all(preUV > 0.f) && all(preUV < 1.f);
+        // 强制跳过时间复用
+        isPreValid = false;
         Reservoir temporalReservoir = GetReservoirs(preReservoirs, preIDx, 0, params.frameDim.x * params.frameDim.y);
 
         if (isPreValid)
@@ -142,7 +142,7 @@ struct ResampleManager
                 isPreValid = false;
         }
 
-        //temporal reuse
+        // temporal reuse
         temporalReservoir.M = clamp(temporalReservoir.M, 0, 30);
         if (!isPreValid || temporalReservoir.age > 100)
         {
@@ -154,32 +154,33 @@ struct ResampleManager
 
         float tpCurrent = EvalTargetPdf(initialSample.radiance, initialSample.vPos, initialSample.sPos, sd);
         temporalReservoir.Merge(sg, initialSample, tpCurrent, wSum);
-       
+
         float tpNew = EvalTargetPdf(temporalReservoir.radiance, initialSample.vPos, temporalReservoir.sPos, sd);
         temporalReservoir.ComputeFinalWeight(tpNew, wSum);
         temporalReservoir.M = clamp(temporalReservoir.M, 0, 30);
         temporalReservoir.age++;
- 
+
         temporalReservoir.vPos = initialSample.vPos;
         temporalReservoir.vNorm = initialSample.vNorm;
         SetReservoirs(currentReservoirs, currentIDx, 0, params.frameDim.x * params.frameDim.y, temporalReservoir);
-        //SetReservoirs(currentReservoirs, currentIDx, 1, params.frameDim.x * params.frameDim.y, temporalReservoir);
-        //return;
+        // 强制跳过空间复用
+        SetReservoirs(currentReservoirs, currentIDx, 1, params.frameDim.x * params.frameDim.y, temporalReservoir);
+        return;
 
-        //spatial Reuse
+        // spatial Reuse
         Reservoir spatialReservoir = GetReservoirs(preReservoirs, preIDx, 0, params.frameDim.x * params.frameDim.y);
-        
+
         spatialReservoir.vPos = sd.posW;
         spatialReservoir.vNorm = sd.N;
 
         float cellSize = CalculateCellSize(sd.posW, gScene.camera.data.posW, params);
         float3 jitteredPos = sd.posW + (sampleNext3D(sg) * 2.0f - 1.0f) * 0.1f * cellSize;
-        //cellSize = CalculateCellSize(jitteredPos, gScene.camera.data.posW, params);
+        // cellSize = CalculateCellSize(jitteredPos, gScene.camera.data.posW, params);
 
         int cellIdx = FindCell(jitteredPos, sd.N, cellSize, params, checkSum);
         if (cellIdx == -1)
         {
-           // spatialReservoir.radiance = float3(10, 0, 10);
+            // spatialReservoir.radiance = float3(10, 0, 10);
             SetReservoirs(currentReservoirs, currentIDx, 1, params.frameDim.x * params.frameDim.y, spatialReservoir);
             return;
         }
@@ -187,13 +188,13 @@ struct ResampleManager
         uint sampleCount = cellCounters.Load(cellIdx);
 
         spatialReservoir.M = clamp(spatialReservoir.M, 0, 100);
-        if ( spatialReservoir.age > 100)
+        if (spatialReservoir.age > 100)
         {
             spatialReservoir.M = 0;
         }
 
-        uint maxSpatialIteration = 3u; //spatialReservoir.M > 10 ? 3u : 10u;
-    
+        uint maxSpatialIteration = 3u; // spatialReservoir.M > 10 ? 3u : 10u;
+
         uint increment = (sampleCount + maxSpatialIteration - 1) / maxSpatialIteration;
         uint offset = round(sampleNext1D(sg) * (increment - 1));
 
@@ -210,8 +211,8 @@ struct ResampleManager
 
         uint reuseID = 0;
         int count = 0;
-        
-        for (uint i = 0; i < sampleCount; i+= increment)
+
+        for (uint i = 0; i < sampleCount; i += increment)
         {
             count++;
             /*float2 offset = sampleNext2D(sg) * 2.f - 1.f;
@@ -219,12 +220,12 @@ struct ResampleManager
             int2 neighbor = preID + offset;
 
             uint2 neighborPixel = clamp(neighbor, 0, params.frameDim.xy - 1);
-            uint neighborPixelIndex = ToLinearIndex(neighborPixel); 
+            uint neighborPixelIndex = ToLinearIndex(neighborPixel);
             if (!CompareSimilarity(pixel, neighborPixel))
                 continue;*/
 
-            uint neighborPixelIndex = cellStorage[cellBaseIdx + (offset + i)%sampleCount];
-            Reservoir neighborReservoir = GetReservoirs(preReservoirs, neighborPixelIndex, (count + 1)%2, params.frameDim.x * params.frameDim.y);
+            uint neighborPixelIndex = cellStorage[cellBaseIdx + (offset + i) % sampleCount];
+            Reservoir neighborReservoir = GetReservoirs(preReservoirs, neighborPixelIndex, (count + 1) % 2, params.frameDim.x * params.frameDim.y);
 
             if (neighborReservoir.M <= 0 || dot(spatialReservoir.vNorm, neighborReservoir.vNorm) < normalThreshold)
             {
@@ -235,7 +236,7 @@ struct ResampleManager
 
             float3 offsetB = neighborReservoir.sPos - neighborReservoir.vPos;
             float3 offsetA = neighborReservoir.sPos - spatialReservoir.vPos;
-                // Discard back-face.
+            // Discard back-face.
             if (dot(spatialReservoir.vNorm, offsetA) <= 0.f)
             {
                 targetPdf = 0.f;
@@ -250,14 +251,14 @@ struct ResampleManager
             float cosPhiA = -dot(offsetA, neighborReservoir.sNorm);
             float cosPhiB = -dot(offsetB, neighborReservoir.sNorm);
             if (cosB <= 0.f || cosPhiB <= 0.f)
-            {  
+            {
                 continue;
             }
             if (cosA <= 0.f || cosPhiA <= 0.f || RA2 <= 0.f || RB2 <= 0.f)
             {
                 targetPdf = 0.f;
             }
-            float jacobi = RA2 *  cosPhiB <= 0.f ? 0.f : clamp(RB2 * cosPhiA / (RA2 * cosPhiB), 0.f, 10.f);
+            float jacobi = RA2 * cosPhiB <= 0.f ? 0.f : clamp(RB2 * cosPhiA / (RA2 * cosPhiB), 0.f, 10.f);
 
             targetPdf *= jacobi;
             bool V = TraceVisibilityRay(computeRayOrigin(spatialReservoir.vPos, spatialReservoir.vNorm), neighborReservoir.sPos);
@@ -265,7 +266,7 @@ struct ResampleManager
             {
                 targetPdf = 0.f;
             }
-            //targetPdf *= dot(spatialReservoir.vNorm, neighborReservoir.vNorm);
+            // targetPdf *= dot(spatialReservoir.vNorm, neighborReservoir.vNorm);
             bool updated = spatialReservoir.Merge(sg, neighborReservoir, targetPdf, wSumS);
             if (updated)
                 reuseID = count;
@@ -296,43 +297,40 @@ struct ResampleManager
             }
             if (isVisible)
             {
-                 //float misWeight = saturate(dot(normalList[i], normalize(dir))) * Luminance(spatialReservoir.radiance);
-                //totalWeight += misWeight * MList[i];
-                //if (reuseID == i)
-                //    chosenWeight = misWeight;
+                // float misWeight = saturate(dot(normalList[i], normalize(dir))) * Luminance(spatialReservoir.radiance);
+                // totalWeight += misWeight * MList[i];
+                // if (reuseID == i)
+                //     chosenWeight = misWeight;
                 z += MList[i];
             }
             else if (i == 0)
                 break;
         }
 
-        //z = totalWeight <= 0.f ? 0.f : chosenWeight / totalWeight;
+        // z = totalWeight <= 0.f ? 0.f : chosenWeight / totalWeight;
 
         float tpNewS = EvalTargetPdf(spatialReservoir.radiance, spatialReservoir.vPos, spatialReservoir.sPos, sd); /* dot(normalList[reuseID], spatialReservoir.vNorm);*/
         float weight = tpNewS * z;
-        //float weight = tpNewS * spatialReservoir.M;
-        float avgWeight = weight > 0.f ? wSumS / weight: 0.f;
+        // float weight = tpNewS * spatialReservoir.M;
+        float avgWeight = weight > 0.f ? wSumS / weight : 0.f;
         spatialReservoir.M = clamp(spatialReservoir.M, 0, 100);
         spatialReservoir.weightF = clamp(avgWeight, 0.f, 10.f);
         spatialReservoir.age++;
 
-        //float3 color = float3(sin(cellIdx), cos(cellIdx), cos(cellIdx * 2.7445f + 1.4212f));
-        //float3 color = float3(sin(sampleCount), cos(sampleCount), cos(sampleCount * 2.7445f + 1.4212f));
-        //spatialReservoir.radiance = count * 0.33;
-        //spatialReservoir.weightF = 1.0f;
+        // float3 color = float3(sin(cellIdx), cos(cellIdx), cos(cellIdx * 2.7445f + 1.4212f));
+        // float3 color = float3(sin(sampleCount), cos(sampleCount), cos(sampleCount * 2.7445f + 1.4212f));
+        // spatialReservoir.radiance = count * 0.33;
+        // spatialReservoir.weightF = 1.0f;
 
         SetReservoirs(currentReservoirs, currentIDx, 1, params.frameDim.x * params.frameDim.y, spatialReservoir);
     }
-    
-
 }
 
 ParameterBlock<ResampleManager> resampleManager;
 
-[numthreads(16,16,1)]
-void main(uint3 dispatchThreadId : SV_DispatchThreadID)
+[numthreads(16, 16, 1)]
+void main(uint3 dispatchThreadId: SV_DispatchThreadID)
 {
     resampleManager.execute(dispatchThreadId.xy);
-    //resampleManager.TemporalResample(dispatchThreadId.xy);
-
+    // resampleManager.TemporalResample(dispatchThreadId.xy);
 }

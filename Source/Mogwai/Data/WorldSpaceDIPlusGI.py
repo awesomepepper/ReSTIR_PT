@@ -24,6 +24,8 @@ def render_graph_WorldSpaceDIPlusGI():
     AccumulatePass = createPass("AccumulatePass", {'enableAccumulation': True, 'precisionMode': AccumulatePrecision.Double})
     g.addPass(AccumulatePass, "AccumulatePass")
     ToneMapper = createPass("ToneMapper", {'autoExposure': False, 'exposureCompensation': 0.0, 'operator': ToneMapOp.Linear})
+    # ToneMapper = createPass("ToneMapper", {'autoExposure': False, 'exposureCompensation': 0.0})
+
     g.addPass(ToneMapper, "ToneMapper")
     ScreenSpaceReSTIRPass = createPass("ScreenSpaceReSTIRPass")    
     g.addPass(ScreenSpaceReSTIRPass, "ScreenSpaceReSTIRPass")
@@ -40,12 +42,12 @@ def render_graph_WorldSpaceDIPlusGI():
 
     g.addEdge("GBufferRT.vbuffer", "ScreenSpaceReSTIRPass.vbuffer")   
     g.addEdge("GBufferRT.mvec", "ScreenSpaceReSTIRPass.motionVectors")    
-    g.addEdge("WorldSpaceReSTIRGIPass.outputColor", "ScreenSpaceReSTIRPass.GIColor")
+    # g.addEdge("WorldSpaceReSTIRGIPass.outputColor", "ScreenSpaceReSTIRPass.GIColor")
     # g.addEdge("ScreenSpaceReSTIRPass.color", "ReSTIRPTPass.directLighting")    
     
     # g.addEdge("ReSTIRPTPass.color", "AccumulatePass.input")
-    # g.addEdge("WorldSpaceReSTIRGIPass.outputColor", "AccumulatePass.input")
-    g.addEdge("ScreenSpaceReSTIRPass.color", "AccumulatePass.input")    
+    g.addEdge("WorldSpaceReSTIRGIPass.outputColor", "AccumulatePass.input")
+    # g.addEdge("ScreenSpaceReSTIRPass.color", "AccumulatePass.input")    
     g.addEdge("AccumulatePass.output", "ToneMapper.src")
     
     g.markOutput("ToneMapper.dst")

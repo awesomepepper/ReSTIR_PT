@@ -1,5 +1,5 @@
-#include "Scene/ScenePrimitiveDefines.slangh"
 #include "Scene/Material/MaterialDefines.slangh"
+#include "Scene/ScenePrimitiveDefines.slangh"
 
 import Scene.Raytracing;
 import Scene.Intersection;
@@ -16,18 +16,17 @@ import Rendering.Materials.MaterialShading;
 import Experimental.WorldSpaceReSTIRGI.InitialSamples;
 import Experimental.WorldSpaceReSTIRGI.ReconnectionData;
 
-//import PathState;
+// import PathState;
 import Params;
 import LoadShadingData;
 import PathTracer;
-
 
 struct SampleInitializer
 {
     Texture2D<PackedHitInfo> vbuffer;
 
     RWStructuredBuffer<InitialSample> initialSamples;
-    RWStructuredBuffer<ReconnectionData> reconnectionDataBuffer;  /// store reconnection data used for multiple bounce resampling
+    RWStructuredBuffer<ReconnectionData> reconnectionDataBuffer; /// store reconnection data used for multiple bounce resampling
 
     RWTexture2D<float3> outputColor;
 
@@ -35,29 +34,32 @@ struct SampleInitializer
 
     void TraceScatterRay(inout PathPayLoad pathState)
     {
+        // 与返回bool类型的那个GenerateScatterRay配合，真正生成下次弹射的ray
         Ray ray = pathState.GenerateScatterRay();
- 
+
         TraceRay(gScene.rtAccel, RAY_FLAG_NONE, 0xff, 0, rayTypeCount, 0, ray.toRayDesc(), pathState);
     };
 
-    void TracePass(uint2 pixel,out InitialSample sample,out ReconnectionData rcData)
+    void TracePass(uint2 pixel, out InitialSample sample, out ReconnectionData rcData)
     {
         sample = {};
         rcData = {};
         HitInfo hit = HitInfo(vbuffer[pixel]);
 
-        float3 primaryRayDir = gScene.camera.computeRayPinhole(pixel,pathtracer.params.frameDim).dir;
+        float3 primaryRayDir = gScene.camera.computeRayPinhole(pixel, pathtracer.params.frameDim).dir;
         float3 vColor = 0.f;
 
-        if(hit.isValid())
+        if (hit.isValid())
         {
-            PathPayLoad pathState = { };
+            PathPayLoad pathState = {};
+            // 初始化PathState
             pathtracer.GeneratePathState(pixel, pathState);
 
             pathState.direction = primaryRayDir;
             pathState.pdf = 1;
 
-            pathtracer.HandleHit(pathState,hit);
+            // 处理像素点处的首次命中
+            pathtracer.HandleHit(pathState, hit);
 
             while (pathState.IsActive())
             {
@@ -83,12 +85,13 @@ struct SampleInitializer
                 uint sampleFlag = -1;
                 if (pathState.rcVertexLength == 2 && sd.linearRoughness < roughnessThreshold)
                 {
-                    
-                   // sampleFlag = uint(SampledBSDFFlags::DiffuseReflection);
-                    //sample.pdf = evalPdfBSDF(sd, wo, sampleFlag);
-                    sd.setActiveLobes((uint) LobeType::Diffuse);
+
+                    // sampleFlag = uint(SampledBSDFFlags::DiffuseReflection);
+                    // sample.pdf = evalPdfBSDF(sd, wo, sampleFlag);
+                    sd.setActiveLobes((uint)LobeType::Diffuse);
                 }
                 sample.pdf = evalPdfBSDF(sd, wo, sampleFlag);
+                // sample.pdf = pathState.rcPdf;
             }
 
             rcData.preRcVertexHitInfo = pathState.preRcVertexHit;
@@ -96,15 +99,14 @@ struct SampleInitializer
             rcData.pathPreRadiance = pathState.prefixPathRadiance;
             rcData.preRcVertexWo = pathState.preRcVertexWo;
             rcData.pathLength = pathState.rcVertexLength - 1;
-            //float invPdf = evalPdfBSDF(sd, wo) > 0.f ? 1.f / evalPdfBSDF(sd, wo) : 0.f;
-            //vColor += evalBSDFCosine(sd, wo) * ss.rcVertexLo * invPdf;
-            //sample.vColor += sample.sColor * thp;
+            // float invPdf = evalPdfBSDF(sd, wo) > 0.f ? 1.f / evalPdfBSDF(sd, wo) : 0.f;
+            // vColor += evalBSDFCosine(sd, wo) * ss.rcVertexLo * invPdf;
+            // sample.vColor += sample.sColor * thp;
             vColor += pathState.LoForDelta;
             if (pathtracer.params.currentGIInstance == 0)
                 outputColor[pixel] = vColor / pathtracer.params.numGIInstance;
             else
                 outputColor[pixel] += vColor / pathtracer.params.numGIInstance;
-            
         }
         else
         {
@@ -114,9 +116,7 @@ struct SampleInitializer
             else
                 outputColor[pixel] += color / pathtracer.params.numGIInstance;
         }
-
     }
-
 };
 
 ParameterBlock<SampleInitializer> sampleInitializer;
@@ -138,7 +138,7 @@ void ScatterTriangleAnyHit(inout PathPayLoad pathState, BuiltInTriangleIntersect
 }
 
 [shader("closesthit")]
-void ScatterTriangleClosestHit(inout PathPayLoad pathState,BuiltInTriangleIntersectionAttributes attribs)
+void ScatterTriangleClosestHit(inout PathPayLoad pathState, BuiltInTriangleIntersectionAttributes attribs)
 {
     TriangleHit thit;
     thit.instanceID = getGeometryInstanceID();
@@ -146,8 +146,7 @@ void ScatterTriangleClosestHit(inout PathPayLoad pathState,BuiltInTriangleInters
     thit.barycentrics = attribs.barycentrics;
     HitInfo hit = HitInfo(thit);
 
-    
-    pathtracer.HandleHit(pathState,hit);   
+    pathtracer.HandleHit(pathState, hit);
 }
 
 [shader("intersection")]
@@ -172,7 +171,7 @@ void ScatterDisplacedTriangleMeshClosestHit(inout PathPayLoad pathState, Displac
     displacedTriangleHit.displacement = attribs.displacement;
 
     HitInfo hit = HitInfo(displacedTriangleHit);
-    pathtracer.HandleHit(pathState,hit);  
+    pathtracer.HandleHit(pathState, hit);
 }
 
 [shader("raygeneration")]
@@ -181,7 +180,7 @@ void RayGen()
     uint2 pixel = DispatchRaysIndex().xy;
     InitialSample sample;
     ReconnectionData rcData;
-    sampleInitializer.TracePass(pixel,sample,rcData);
+    sampleInitializer.TracePass(pixel, sample, rcData);
     uint linearIdx = pixel.y * pathtracer.params.frameDim.x + pixel.x;
     sampleInitializer.initialSamples[linearIdx] = sample;
     sampleInitializer.reconnectionDataBuffer[linearIdx] = rcData;

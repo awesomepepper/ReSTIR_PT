@@ -83,10 +83,10 @@ private:
     /// </summary>
     struct PathTracerOptions
     {
-        bool usedReSTIRDI = true;
+        bool usedReSTIRDI = false;
         bool usedNEE = true;
         bool usedMIS = true;
-        uint maxBounces = 3u;
+        uint maxBounces = 15u;
     } mPtOptions;
 
     bool mOptionChanged = false;
