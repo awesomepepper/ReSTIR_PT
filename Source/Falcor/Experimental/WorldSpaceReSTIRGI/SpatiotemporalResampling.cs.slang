@@ -163,6 +163,7 @@ struct ResampleManager
         temporalReservoir.vPos = initialSample.vPos;
         temporalReservoir.vNorm = initialSample.vNorm;
         SetReservoirs(currentReservoirs, currentIDx, 0, params.frameDim.x * params.frameDim.y, temporalReservoir);
+        
         // 强制跳过空间复用
         SetReservoirs(currentReservoirs, currentIDx, 1, params.frameDim.x * params.frameDim.y, temporalReservoir);
         return;

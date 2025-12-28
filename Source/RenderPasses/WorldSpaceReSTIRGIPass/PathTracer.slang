@@ -174,6 +174,7 @@ struct PathPayLoad
             flags &= ~(uint(flag));
     }
 
+    // 清除描述"当前弹射事件类型"的临时标志位，为下一次弹射做准备
     [mutating]
     void ClearEventFlags()
     {
@@ -455,11 +456,21 @@ struct PathTracer
             // pathState.thp *= bsdfSample.weight;
             pathState.direction = bsdfSample.wi;
             pathState.origin = rayOrigin;
+
+            if (bsdfSample.isLobe(LobeType::Transmission))
+            {
+                pathState.origin = sd.computeNewRayOrigin(false);
+            }
+
             // 当前bsdf采样点的概率密度函数
             pathState.pdf = bsdfSample.pdf;
 
             // 这个weight是渲染方程计算中除了入射光强度以外的部分，再乘个入射光强度就得到出射光强度了。因此相当于当前点的thp
             float3 weight = bsdfSample.weight;
+
+            // print("Path weight", weight);
+
+            // ! 这两个print 之间的部分错误修改了weight的值成inf了
 
             // handle event
             // 标记这次反弹命中点的反弹类型
@@ -490,17 +501,22 @@ struct PathTracer
                         sd.setActiveLobes((uint)LobeType::Diffuse);
                         pathState.pdf = evalPdfBSDF(sd, bsdfSample.wi);
                         weight = evalBSDFCosine(sd, bsdfSample.wi) / pathState.pdf;
+                        // print("Path weight1", weight);
                     }
-                    if (pathState.IsSpecularBounce())
+                    // ! 就是这里！！
+                    if (pathState.IsSpecularBounce() && bsdfSample.isLobe(LobeType::SpecularReflection))
                     {
                         FalcorBSDF bsdf;
                         bsdf.setup(sd);
                         sd.setActiveLobes((uint)LobeType::SpecularReflection);
                         pathState.pdf = evalPdfBSDF(sd, bsdfSample.wi, -1, true);
                         weight = evalBSDFCosine(sd, bsdfSample.wi, -1, true) / (pathState.pdf * bsdf.pSpecularReflection);
+                        // print("Path weight2", weight);
                     }
                 }
             }
+
+            // print("Path weight", weight);
 
             // update thp
             pathState.thp *= weight;
@@ -508,6 +524,8 @@ struct PathTracer
             bool valid = any(pathState.thp > 0.f);
             if (valid)
             {
+                // 如果“下一个顶点”仍然在重连接顶点之前（即还在前缀路径中）(currentVertexIndex + 1 代表我们要去往的那个顶点的索引)
+                // 则更新前缀路径的吞吐量,同时thp维持重连接之后各点的局部权重
                 if (pathState.currentVertexIndex + 1 < pathState.rcVertexLength)
                 {
                     pathState.UpdatePrefixThp();
@@ -525,8 +543,6 @@ struct PathTracer
         printSetPixel(DispatchRaysIndex().xy);
         pathState.currentVertexIndex++;
 
-        print("Path Throughput", pathState.thp);
-
         const HitType hitType = hit.getType();
         const bool isTriangleHit = hitType == HitType::Triangle;
         const bool isPrimaryHit = (pathState.currentVertexIndex == 1);
@@ -534,9 +550,31 @@ struct PathTracer
         const float lod = 0.f;
         ShadingData sd = LoadShadingData(hit, pathState.direction, lod, isPrimaryHit);
 
+        print("-----------------------------------------------", 0);
+        // print("posW", sd.posW);
+        // print("faceN", sd.faceN);
+        print("frontFacing", sd.frontFacing);
+        print("Material ID", sd.materialID);
+        print("Path currentVertexIndex", pathState.currentVertexIndex);
+        print("Path thp", pathState.thp);
+        // print("Path prefixThp", pathState.prefixThp);
+        // print("Path Radiance", pathState.radiance);
+        // print("Path LoForDelta", pathState.LoForDelta);
+        print("Path Flags", pathState.flags);
+        // print("Path Origin", pathState.origin);
+        // print("Path Direction", pathState.direction);
+        // print("Path PDF", pathState.pdf);
+        // print("Path RCVertexLength", pathState.rcVertexLength);
+        // print("Path IsLastVertexClassifiedAsRough", pathState.isLastVertexClassifiedAsRough);
+        // print("Path prefixPathRadiance", pathState.prefixPathRadiance);
+        // print("Path rcVertexRadiance", pathState.rcVertexRadiance);
+        print("Pixel", DispatchRaysIndex().xy);
+
         pathState.norm = sd.N;
 
+        // ? 干啥的
         bool isLightSamplable = !pathState.IsDelta();
+        // 是否计算自发光（指光线弹射命中自发光表面时要不要加上其radiance）
         bool computeEmissive = isPrimaryHit || (!kUsedNEE || kUsedMIS || !pathState.IsLightSampled() || !isLightSamplable);
         if (kUsedReSTIRDI && pathState.currentVertexIndex == 2)
             computeEmissive = false;
@@ -553,10 +591,12 @@ struct PathTracer
         // if (pathState.currentVertexIndex == 1)
         //     computeEmissive = false;
 
-        //
+        // MIS处理弹射命中光源和NEE的复合
         float misWeight = 1.f;
         if (computeEmissive && any(sd.emissive > 0.f))
         {
+            // IsLightSampled表示上个顶点是否执行了NEE，isLightSamplable表示上个顶点能否执行NEE
+            // MIS配对是跨两次HandleHit调用的
             if (!isPrimaryHit && isTriangleHit && kUsedMIS && pathState.IsLightSampled() && isLightSamplable)
             {
                 TriangleHit thit = hit.getTriangleHit();
@@ -590,6 +630,7 @@ struct PathTracer
             pathState.LoForDelta += pathState.GetCurrentThp() * sd.emissive;
         }
 
+        // 标志着当前顶点是否是重连接顶点（即sample的第一个顶点）
         bool connectabele = pathState.isLastVertexClassifiedAsRough && pathState.currentVertexIndex == pathState.rcVertexLength;
         // set reconnection vertex
 
@@ -623,6 +664,7 @@ struct PathTracer
             bool isValidSample = false;
             LightSample ls = {};
 
+            // 如果当前顶点有非Delta反射Lobe则为true，否则为false
             pathState.SetLightSampled((lobes & (uint)LobeType::NonDeltaReflection) != 0);
             if (pathState.IsLightSampled())
                 isValidSample = GenerateLightSample(vertex, pathState.sg, ls);

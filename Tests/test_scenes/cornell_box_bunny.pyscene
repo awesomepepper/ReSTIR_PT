@@ -53,8 +53,10 @@ rightWall.baseColor = float4(0.14, 0.45, 0.091, 1.0)
 rightWall.roughness = 0.5
 
 bunny = StandardMaterial('Bunny')
-bunny.baseColor = float4(0.7, 0.7, 0.7, 1.0)
-bunny.roughness = 0.1
+bunny.specularTransmission = 1.0
+bunny.indexOfRefraction = 1.5
+# bunny.baseColor = float4(0.7, 0.7, 0.7, 1.0)
+# bunny.roughness = 0.1
 
 # Create geometry
 
