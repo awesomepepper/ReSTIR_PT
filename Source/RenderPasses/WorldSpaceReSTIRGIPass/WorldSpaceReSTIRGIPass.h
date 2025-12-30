@@ -30,6 +30,7 @@
 #include "Experimental/WorldSpaceReSTIRGI/WorldSpaceReSTIRGI.h"
 #include "Utils/Debug/PixelDebug.h"
 #include "Utils/Sampling/SampleGenerator.h"
+#include "Utils/Algorithm/PrefixSum.h"
 #include "Rendering/Lights/EmissiveUniformSampler.h"
 #include "Rendering/Lights/EnvMapSampler.h"
 #include "Params.slang"
@@ -70,6 +71,11 @@ private:
 
     void PrepareGIData(RenderContext* pRenderContext, const RenderData& renderData);
     void FinalShading(RenderContext* pRenderContext, const RenderData& renderData, uint currentInstance);
+    
+    // Caustic Photon Mapping
+    void TraceCausticPhotons(RenderContext* pRenderContext);
+    void BuildPhotonHashGrid(RenderContext* pRenderContext);
+    void UpdatePhotonResources();
 
     ComputePass::SharedPtr mpFinalShadingPass;
     ComputePass::SharedPtr mpReflectTypePass;
@@ -80,6 +86,10 @@ private:
         RtBindingTable::SharedPtr mpBindTable;
         RtProgramVars::SharedPtr mpVars;
     } mPathTracingPass;
+    
+    // Caustic Photon Tracing Pass
+    RtPass mPhotonTracingPass;
+    ComputePass::SharedPtr mpBuildPhotonHashGridPass;
 
     /// <summary>
     /// changed required recompile
@@ -90,6 +100,12 @@ private:
         bool usedNEE = true;
         bool usedMIS = true;
         uint maxBounces = 15u;
+        // Caustic Photon Mapping options
+        bool useCausticPhotonMapping = false;
+        uint photonsPerFrame = 100000u;
+        uint maxPhotonBounces = 8u;
+        float photonGatherRadius = 0.1f;
+        uint maxGatherPhotons = 100u;
     } mPtOptions;
 
     bool mOptionChanged = false;
@@ -103,6 +119,15 @@ private:
 
     Buffer::SharedPtr mpInitialSample;
     Buffer::SharedPtr mpReconnectionData;
+    
+    // Caustic Photon Mapping buffers
+    Buffer::SharedPtr mpPhotonBuffer;           // Stores caustic photons
+    Buffer::SharedPtr mpPhotonAppendBuffer;     // For building hash grid
+    Buffer::SharedPtr mpPhotonCellStorage;      // Hash grid cell storage
+    Buffer::SharedPtr mpPhotonIndexBuffer;      // Hash grid index buffer
+    Buffer::SharedPtr mpPhotonCheckSumBuffer;   // Hash grid checksum
+    Buffer::SharedPtr mpPhotonCellCounters;     // Hash grid cell counters
+    PrefixSum::SharedPtr mpPhotonPrefixSum;     // For building hash grid
 
     Scene::SharedPtr mpScene;
     SampleGenerator::SharedPtr mpSampleGenerator;
