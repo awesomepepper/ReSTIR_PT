@@ -579,13 +579,12 @@ struct PathTracer
         if (kUsedReSTIRDI && pathState.currentVertexIndex == 2)
             computeEmissive = false;
 
-        // ? 真的有必要做这样的tradeoff吗？在复用阶段这样的不适合重用的样本权重不应该会很低、直接不用不就好了？
-        // 选择第一个粗糙表面为重连接点解决了一部分问题，但重连接点之后的点是光滑表面的情况仍不适合重用
-        // 因此这里直接强制这样的光滑表面只使用漫反射lobe，牺牲了物理准确性换得可以有效复用的样本
-        if (pathState.isLastVertexClassifiedAsRough && sd.linearRoughness <= kRoughnessThreshold)
-        {
-            sd.setActiveLobes((uint)LobeType::Diffuse);
-        }
+        // 注释掉禁用 specular lobes 的逻辑，以支持焦散效果
+        // 焦散路径的贡献会通过 LoForDelta 直接输出，不影响 ReSTIR 复用
+        // if (pathState.isLastVertexClassifiedAsRough && sd.linearRoughness <= kRoughnessThreshold)
+        // {
+        //     sd.setActiveLobes((uint)LobeType::Diffuse);
+        // }
 
         /// when in a scene with emissive triangle, set computeEmissive false
         // if (pathState.currentVertexIndex == 1)
@@ -612,7 +611,15 @@ struct PathTracer
             if (pathState.currentVertexIndex <= pathState.rcVertexLength && !isPrimaryHit)
             {
                 float3 thp = pathState.GetCurrentThp();
-                pathState.prefixPathRadiance += thp * sd.emissive * misWeight;
+                // 对于透过 delta 材质看到的 emissive，只累积到 LoForDelta，避免重复
+                if (pathState.currentVertexIndex > 1 && !isLightSamplable)
+                {
+                    pathState.LoForDelta += thp * sd.emissive * misWeight;
+                }
+                else
+                {
+                    pathState.prefixPathRadiance += thp * sd.emissive * misWeight;
+                }
             }
             else if (pathState.currentVertexIndex > pathState.rcVertexLength)
             {
@@ -620,8 +627,6 @@ struct PathTracer
                 pathState.rcVertexRadiance += thp * sd.emissive * misWeight;
             }
         }
-        if (kUsedReSTIRDI && pathState.currentVertexIndex == 2 && !isLightSamplable)
-            pathState.LoForDelta += pathState.GetCurrentThp() * sd.emissive * misWeight;
 
         // 处理直射光
         // 如果currentVertexIndex为1且物体自发光，直接累加sd.emissive到LoForDelta
@@ -688,7 +693,15 @@ struct PathTracer
                         if (pathState.currentVertexIndex < pathState.rcVertexLength)
                         {
                             float3 thp = pathState.GetCurrentThp();
-                            pathState.prefixPathRadiance += thp * Lr;
+                            // 对于透过 delta 材质看到的表面的 NEE，只累积到 LoForDelta，避免重复
+                            if (pathState.currentVertexIndex > 1 && !isLightSamplable)
+                            {
+                                pathState.LoForDelta += thp * Lr;
+                            }
+                            else
+                            {
+                                pathState.prefixPathRadiance += thp * Lr;
+                            }
                         }
                         else
                         {
@@ -751,7 +764,15 @@ struct PathTracer
             if (pathState.currentVertexIndex < pathState.rcVertexLength)
             {
                 float3 thp = pathState.GetCurrentThp();
-                pathState.prefixPathRadiance += thp * envRadiance * misWeight;
+                // 对于透过 delta 材质看到的环境光，只累积到 LoForDelta，避免重复
+                if (pathState.currentVertexIndex >= 1 && !isLightSamplable)
+                {
+                    pathState.LoForDelta += thp * envRadiance * misWeight;
+                }
+                else
+                {
+                    pathState.prefixPathRadiance += thp * envRadiance * misWeight;
+                }
             }
             else
             {
@@ -759,9 +780,6 @@ struct PathTracer
                 pathState.rcVertexRadiance += thp * envRadiance * misWeight;
             }
         }
-
-        if (kUsedReSTIRDI && pathState.currentVertexIndex == 1 && !isLightSamplable)
-            pathState.LoForDelta += pathState.GetCurrentThp() * envRadiance * misWeight;
     }
 };
 

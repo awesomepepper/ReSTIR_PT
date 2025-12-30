@@ -52,7 +52,14 @@ struct FinalShading
             sd.setActiveLobes((uint) LobeType::Diffuse);
         }
 
-        outputColor[pixel] += (data.pathPreRadiance + data.pathPreThp * evalBSDFCosine(sd, sample.dir) * sample.Li /flag ) / params.numGIInstance;
+        // 检查 sample.dir 是否有效（非零且非 NaN）
+        float3 bsdfValue = float3(0.f);
+        if (any(sample.Li > 0.f) && all(isfinite(sample.dir)) && length(sample.dir) > 0.001f)
+        {
+            bsdfValue = evalBSDFCosine(sd, sample.dir);
+        }
+        
+        outputColor[pixel] += (data.pathPreRadiance + data.pathPreThp * bsdfValue * sample.Li / flag) / params.numGIInstance;
         //outputColor[pixel] = sample.Li;
         //outputColor[pixel] += sample.Li;
 
