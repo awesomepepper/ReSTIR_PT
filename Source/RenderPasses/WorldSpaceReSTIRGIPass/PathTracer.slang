@@ -579,8 +579,12 @@ struct PathTracer
         if (kUsedReSTIRDI && pathState.currentVertexIndex == 2)
             computeEmissive = false;
 
+        
         // 注释掉禁用 specular lobes 的逻辑，以支持焦散效果
         // 焦散路径的贡献会通过 LoForDelta 直接输出，不影响 ReSTIR 复用
+        // // ? 真的有必要做这样的tradeoff吗？在复用阶段这样的不适合重用的样本权重不应该会很低、直接不用不就好了？
+        // // 选择第一个粗糙表面为重连接点解决了一部分问题，但重连接点之后的点是光滑表面的情况仍不适合重用
+        // // 因此这里直接强制这样的光滑表面只使用漫反射lobe，牺牲了物理准确性换得可以有效复用的样本
         // if (pathState.isLastVertexClassifiedAsRough && sd.linearRoughness <= kRoughnessThreshold)
         // {
         //     sd.setActiveLobes((uint)LobeType::Diffuse);

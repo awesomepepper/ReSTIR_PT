@@ -91,7 +91,7 @@ sceneBuilder.addMeshInstance(
 )
 
 sceneBuilder.addMeshInstance(
-    sceneBuilder.addNode('Bunny', Transform(translation=float3(0.03, -0.068, 0), rotationEuler=float3(0, 0, 0), scaling=2)),
+    sceneBuilder.addNode('Bunny', Transform(translation=float3(0.03, -0.067, 0), rotationEuler=float3(0, 0, 0), scaling=2)),
     sceneBuilder.addTriangleMesh(bunnyMesh, bunny)
 )
 
