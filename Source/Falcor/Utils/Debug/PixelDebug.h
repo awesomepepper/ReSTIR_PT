@@ -86,7 +86,7 @@ namespace Falcor
         // Configuration
 
         // 1291, 757
-        bool                        mEnabled = true;               ///< Enable debugging features.
+        bool                        mEnabled = false;               ///< Enable debugging features (default off).
         uint2                       mSelectedPixel = { 0, 0 };      ///< Currently selected pixel.
 
         // Runtime data

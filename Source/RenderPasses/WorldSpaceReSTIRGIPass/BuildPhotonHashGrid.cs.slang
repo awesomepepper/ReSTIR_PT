@@ -29,7 +29,10 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint startIdx = cellIdx > 0 ? gPhotonIndexBuffer.Load((cellIdx - 1) * 4) : 0;
     uint inCellIdx = appendData.inCellIdx;
     
-    // Store photon index in cell storage
+    // Store photon index in cell storage (with bounds check)
     uint storageIdx = startIdx + inCellIdx;
-    gPhotonCellStorage[storageIdx] = appendData.photonIndex;
+    if (storageIdx < gTotalPhotons)
+    {
+        gPhotonCellStorage[storageIdx] = appendData.photonIndex;
+    }
 }

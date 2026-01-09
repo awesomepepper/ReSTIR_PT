@@ -102,10 +102,10 @@ private:
         uint maxBounces = 15u;
         // Caustic Photon Mapping options
         bool useCausticPhotonMapping = false;
-        uint photonsPerFrame = 100000u;
-        uint maxPhotonBounces = 8u;
-        float photonGatherRadius = 0.1f;
-        uint maxGatherPhotons = 100u;
+        uint photonsPerFrame = 200000u;  // Increased for better coverage
+        uint maxPhotonBounces = 10u;     // Bounces for glass
+        float photonGatherRadius = 0.08f; // Larger radius for more photon hits
+        uint maxGatherPhotons = 200u;    // More photons per gather
     } mPtOptions;
 
     bool mOptionChanged = false;
@@ -136,6 +136,18 @@ private:
     PixelDebug::SharedPtr           mpPixelDebug;               ///< Utility class for pixel debugging (print in shaders).
 
     PTRuntimeParams params;
+
+    // Caustic Photon CB - must match shader layout exactly (36 bytes)
+    struct CausticPhotonCBData
+    {
+        float3 sceneBBMin;          // 0-11
+        float cellSize;             // 12-15
+        float gatherRadius;         // 16-19
+        uint32_t maxGatherPhotons;  // 20-23
+        uint32_t hashTableSize;     // 24-27
+        uint32_t totalPhotons;      // 28-31
+        uint32_t useCausticPhotonMapping; // 32-35
+    };
 
     uint pad = 0;
 };

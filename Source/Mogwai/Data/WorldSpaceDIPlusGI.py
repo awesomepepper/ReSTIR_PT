@@ -21,7 +21,7 @@ def render_graph_WorldSpaceDIPlusGI():
     # g.addPass(GBufferRaster, "GBufferRaster")
     GBufferRT = createPass("GBufferRT", {'samplePattern': SamplePattern.Center, 'sampleCount': 1, 'texLOD': TexLODMode.Mip0, 'useAlphaTest': True})
     g.addPass(GBufferRT, "GBufferRT")
-    AccumulatePass = createPass("AccumulatePass", {'enableAccumulation': True, 'precisionMode': AccumulatePrecision.Double})
+    AccumulatePass = createPass("AccumulatePass", {'enableAccumulation': False, 'precisionMode': AccumulatePrecision.Double})
     g.addPass(AccumulatePass, "AccumulatePass")
     ToneMapper = createPass("ToneMapper", {'autoExposure': False, 'exposureCompensation': 0.0, 'operator': ToneMapOp.Linear})
     # ToneMapper = createPass("ToneMapper", {'autoExposure': False, 'exposureCompensation': 0.0})
@@ -58,3 +58,4 @@ def render_graph_WorldSpaceDIPlusGI():
 graph_WorldSpaceDIPlusGI = render_graph_WorldSpaceDIPlusGI()
 
 m.addGraph(graph_WorldSpaceDIPlusGI)
+m.loadScene('E:/ReSTIR/ReSTIR_PT/Tests/test_scenes/cornell_box_bunny.pyscene')

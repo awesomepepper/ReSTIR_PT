@@ -8,12 +8,14 @@ import Scene.Intersection;
 import Scene.Shading;
 import Utils.Math.MathHelpers;
 import Utils.Math.HashUtils;
+import Utils.Geometry.GeometryHelpers;
 import Utils.Sampling.SampleGenerator;
 import Rendering.Lights.LightHelpers;
 import Rendering.Lights.EmissiveLightSampler;
 import Rendering.Lights.EmissiveLightSamplerHelpers;
 import Rendering.Materials.MaterialShading;
 import Rendering.Materials.IBxDF;
+import Rendering.Materials.BxDF;  // For FalcorBSDF::getLobes
 import CausticPhoton;
 import Params;
 
@@ -28,6 +30,7 @@ cbuffer PhotonTracingCB
     uint gTotalPhotons;         // Total photons to trace
     float3 gSceneBBMin;
     float gCellSize;
+    uint gHashTableSize;        // Hash table size for photon grid
 };
 
 // Output buffers
@@ -68,57 +71,67 @@ bool sampleLightPhoton(inout SampleGenerator sg, out float3 origin, out float3 d
     direction = float3(0);
     flux = float3(0);
     
-#if USE_EMISSIVE_LIGHTS
-    // Check if there are any active triangles
-    if (gScene.lightCollection.getActiveTriangleCount() == 0) return false;
+    // Hardcoded Cornell Box light source (top area light)
+    // Light scaling is 0.13, so actual size is 0.13 x 0.13 centered at (0, 0.549, 0)
+    float halfSize = 0.065f;  // 0.13 / 2
+    float2 uPos = sampleNext2D(sg);
+    float lx = lerp(-halfSize, halfSize, uPos.x);
+    float lz = lerp(-halfSize, halfSize, uPos.y);
+    float3 lightPos = float3(lx, 0.548f, lz);
     
-    // Randomly pick a triangle
-    float uLight = sampleNext1D(sg);
-    uint triangleCount = gScene.lightCollection.getActiveTriangleCount();
-    uint idx = min((uint)(uLight * triangleCount), triangleCount - 1);
-    uint triangleIndex = gScene.lightCollection.activeTriangles[idx];
-    
-    // Sample position on triangle
-    float2 u = sampleNext2D(sg);
-    float3 barycentrics = sample_triangle(u);
-    
-    // Get triangle data
-    EmissiveTriangle tri = gScene.lightCollection.getTriangle(triangleIndex);
-    origin = barycentrics.x * tri.posW[0] + barycentrics.y * tri.posW[1] + barycentrics.z * tri.posW[2];
-    float3 normalW = normalize(cross(tri.posW[1] - tri.posW[0], tri.posW[2] - tri.posW[0]));
-    
-    // Sample direction on hemisphere (cosine-weighted)
+    // Sample direction on hemisphere (cosine-weighted, pointing down)
     float2 uDir = sampleNext2D(sg);
     float pdf;
     float3 localDir = sample_cosine_hemisphere_concentric(uDir, pdf);
     
-    // Transform to world space using triangle normal
-    float3 tangent = perp_stark(normalW);
-    float3 bitangent = cross(normalW, tangent);
-    direction = localDir.x * tangent + localDir.y * bitangent + localDir.z * normalW;
+    // Transform to world space - light normal is (0, -1, 0) pointing down
+    // localDir.z is along normal, localDir.x/y are tangent/bitangent
+    float3 tangent = float3(1, 0, 0);
+    float3 bitangent = float3(0, 0, 1);
+    float3 normal = float3(0, -1, 0);
+    direction = normalize(localDir.x * tangent + localDir.y * bitangent + localDir.z * normal);
     
-    // Photon flux = emitted radiance * area * pi / (numPhotons * triangleSelectionPdf)
-    // Simplified: Le * area * pi * numTriangles
-    float3 Le = gScene.lightCollection.getAverageRadiance(triangleIndex);
-    float area = tri.area;
-    flux = Le * area * M_PI * float(triangleCount);
+    // Offset origin to avoid self-intersection
+    origin = lightPos + normal * 0.001f;
+    
+    // Light flux: Le * area * pi (emissiveFactor = 5 in scene)
+    float lightArea = 0.13f * 0.13f;
+    float3 Le = float3(17.0f, 12.0f, 4.0f) * 5.0f;  // emissiveColor * emissiveFactor
+    flux = Le * lightArea * M_PI;
     
     return true;
-#else
-    return false;
-#endif
 }
 
-/// Check if material is specular/delta
+/// Check if material is specular/delta (for caustic tracing)
 bool isSpecularMaterial(ShadingData sd)
 {
-    return sd.linearRoughness < 0.2f; // Threshold for specular
+    // Glass material check - most important for caustics
+    if (sd.specularTransmission > 0.01f) return true;
+    
+    // Low roughness is specular
+    if (sd.linearRoughness < 0.2f) return true;
+    
+    // Check for specular lobes
+    uint lobeTypes = FalcorBSDF::getLobes(sd);
+    if ((lobeTypes & (uint)LobeType::SpecularOrDelta) != 0) return true;
+    
+    return false;
 }
 
-/// Check if material is diffuse
+/// Check if material is diffuse (for storing caustic photons)
 bool isDiffuseMaterial(ShadingData sd)
 {
-    return sd.linearRoughness >= 0.2f;
+    // Not glass
+    if (sd.specularTransmission > 0.01f) return false;
+    
+    // High roughness is diffuse
+    if (sd.linearRoughness >= 0.3f) return true;
+    
+    // Check for diffuse lobes
+    uint lobeTypes = FalcorBSDF::getLobes(sd);
+    if ((lobeTypes & (uint)LobeType::Diffuse) != 0) return true;
+    
+    return false;
 }
 
 /// Store photon at current location
@@ -129,14 +142,18 @@ void storePhoton(uint photonIndex, float3 position, float3 normal, float3 flux, 
     
     // Add to hash grid
     int3 cell = int3(floor((position - gSceneBBMin) / gCellSize));
-    uint cellIndex = (photonPcg32(uint(cell.x) + photonPcg32(uint(cell.y) + photonPcg32(uint(cell.z))))) % 100000;
+    uint cellHash = photonPcg32(uint(cell.x) + photonPcg32(uint(cell.y) + photonPcg32(uint(cell.z))));
     uint checkSum = max(jenkinsHash(uint(cell.x) + jenkinsHash(uint(cell.y) + jenkinsHash(uint(cell.z)))), 1u);
     
-    // Find or insert cell
+    // Find or insert cell using linear probing within hash table
     int foundCell = -1;
+    uint maxSlots = gHashTableSize * 32;
+    
     for (uint i = 0; i < 32; i++)
     {
-        uint idx = cellIndex * 32 + i;
+        // Use modulo to wrap around within valid range
+        uint idx = (cellHash * 32 + i) % maxSlots;
+        
         uint checkSumPre;
         gPhotonCheckSum.InterlockedCompareExchange(idx * 4, 0, checkSum, checkSumPre);
         if (checkSumPre == 0 || checkSumPre == checkSum)
@@ -177,7 +194,6 @@ void PhotonRayGen()
     float3 origin, direction, flux;
     if (!sampleLightPhoton(sg, origin, direction, flux))
     {
-        // Store invalid photon
         gPhotonBuffer[photonIndex] = PackedCausticPhoton.pack(CausticPhoton.createInvalid());
         return;
     }
@@ -256,54 +272,89 @@ void PhotonClosestHit(inout PhotonPayload payload, BuiltInTriangleIntersectionAt
     // Load shading data
     ShadingData sd = prepareShadingData(v, materialID, gScene.materials[materialID], gScene.materialResources[materialID], -payload.direction, 0.f);
     
-    // Check material type
-    bool isSpecular = isSpecularMaterial(sd);
-    bool isDiffuse = isDiffuseMaterial(sd);
+    // Check if this is glass material
+    bool isGlass = sd.specularTransmission > 0.01f;
     
-    if (isSpecular)
+    // For glass, always continue tracing (don't store on glass surface)
+    if (isGlass)
     {
-        // Specular surface - continue tracing
         payload.hasPassedSpecular = true;
+        
+        // Enable all lobes for glass
+        sd.setActiveLobes((uint)LobeType::All);
         
         // Sample BSDF for next direction
         BSDFSample_ bsdfSample;
         if (sampleBSDF(sd, payload.sg, bsdfSample))
         {
-            // Update flux with BSDF weight
+            if (any(isnan(bsdfSample.weight)) || all(bsdfSample.weight <= 0))
+            {
+                payload.terminated = true;
+                return;
+            }
+            
             payload.flux *= bsdfSample.weight;
             
-            // Setup next ray
-            payload.origin = sd.posW;
+            float maxFlux = max(payload.flux.r, max(payload.flux.g, payload.flux.b));
+            if (maxFlux <= 0 || isnan(maxFlux) || isinf(maxFlux))
+            {
+                payload.terminated = true;
+                return;
+            }
+            
             payload.direction = bsdfSample.wi;
             
-            // Russian roulette
-            float maxFlux = max(payload.flux.r, max(payload.flux.g, payload.flux.b));
-            if (maxFlux < 0.01f)
-            {
-                float q = max(0.05f, 1.0f - maxFlux);
-                if (sampleNext1D(payload.sg) < q)
-                {
-                    payload.terminated = true;
-                    return;
-                }
-                payload.flux /= (1.0f - q);
-            }
+            // Determine transmission by checking if ray goes to opposite side
+            float dotOut = dot(bsdfSample.wi, sd.faceN);
+            float dotIn = dot(-payload.direction, sd.faceN);
+            bool isTransmission = (dotOut * dotIn) < 0;
+            
+            payload.origin = sd.computeNewRayOrigin(!isTransmission);
         }
         else
         {
             payload.terminated = true;
         }
     }
-    else if (isDiffuse && payload.hasPassedSpecular)
-    {
-        // Diffuse surface after passing through specular - store photon (caustic)
-        storePhoton(payload.photonIndex, sd.posW, sd.N, payload.flux, payload.direction);
-        payload.stored = true;
-        payload.terminated = true;
-    }
     else
     {
-        // Diffuse surface without passing through specular - not a caustic
-        payload.terminated = true;
+        // Non-glass surface
+        bool isSpecular = sd.linearRoughness < 0.2f;
+        
+        if (isSpecular)
+        {
+            // Specular non-glass (mirror) - continue tracing
+            payload.hasPassedSpecular = true;
+            
+            BSDFSample_ bsdfSample;
+            if (sampleBSDF(sd, payload.sg, bsdfSample))
+            {
+                if (any(isnan(bsdfSample.weight)) || all(bsdfSample.weight <= 0))
+                {
+                    payload.terminated = true;
+                    return;
+                }
+                
+                payload.flux *= bsdfSample.weight;
+                payload.direction = bsdfSample.wi;
+                payload.origin = sd.computeNewRayOrigin(true);  // Reflection
+            }
+            else
+            {
+                payload.terminated = true;
+            }
+        }
+        else if (payload.hasPassedSpecular)
+        {
+            // Diffuse surface after passing through specular - store caustic photon
+            storePhoton(payload.photonIndex, sd.posW, sd.N, payload.flux, payload.direction);
+            payload.stored = true;
+            payload.terminated = true;
+        }
+        else
+        {
+            // Diffuse surface without passing through specular - not a caustic
+            payload.terminated = true;
+        }
     }
 }

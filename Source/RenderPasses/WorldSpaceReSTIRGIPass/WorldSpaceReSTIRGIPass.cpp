@@ -445,17 +445,21 @@ void WorldSpaceReSTIRGIPass::FinalShading(RenderContext* pRenderContext, const R
 
     vars["gScene"] = mpScene->getParameterBlock();
     
-    // Set caustic photon mapping parameters
+    // Set caustic photon mapping parameters using struct to ensure correct layout
     float3 sceneBBMin = mpScene->getSceneBounds().minPoint - float3(0.1f, 0.1f, 0.1f);
     float3 boundingSize = abs(mpScene->getSceneBounds().maxPoint - mpScene->getSceneBounds().minPoint);
     float cellSize = std::max(boundingSize.x, std::max(boundingSize.y, boundingSize.z)) / 80.0f;
     
-    vars["CausticPhotonCB"]["gUseCausticPhotonMapping"] = mPtOptions.useCausticPhotonMapping && mpScene->useEmissiveLights();
-    vars["CausticPhotonCB"]["gSceneBBMin"] = sceneBBMin;
-    vars["CausticPhotonCB"]["gCellSize"] = cellSize;
-    vars["CausticPhotonCB"]["gGatherRadius"] = mPtOptions.photonGatherRadius;
-    vars["CausticPhotonCB"]["gMaxGatherPhotons"] = mPtOptions.maxGatherPhotons;
-    vars["CausticPhotonCB"]["gHashTableSize"] = 100000u;
+    CausticPhotonCBData cbData;
+    cbData.sceneBBMin = sceneBBMin;
+    cbData.cellSize = cellSize;
+    cbData.gatherRadius = mPtOptions.photonGatherRadius;
+    cbData.maxGatherPhotons = mPtOptions.maxGatherPhotons;
+    cbData.hashTableSize = 100000u;
+    cbData.totalPhotons = mPtOptions.photonsPerFrame;
+    cbData.useCausticPhotonMapping = (mPtOptions.useCausticPhotonMapping && mpScene->useEmissiveLights()) ? 1u : 0u;
+    
+    vars["CausticPhotonCB"].setBlob(cbData);
     
     // Set photon buffers
     if (mpPhotonBuffer) vars["gPhotonBuffer"] = mpPhotonBuffer;
@@ -529,8 +533,10 @@ void WorldSpaceReSTIRGIPass::TraceCausticPhotons(RenderContext* pRenderContext)
     PROFILE("TraceCausticPhotons");
     
     if (!mPhotonTracingPass.mpProgram || !mPhotonTracingPass.mpVars) return;
+    if (!mpPhotonBuffer) return;
     
     // Clear buffers
+    pRenderContext->clearUAV(mpPhotonBuffer->getUAV().get(), uint4(0));
     pRenderContext->clearUAV(mpPhotonCheckSumBuffer->getUAV().get(), uint4(0));
     pRenderContext->clearUAV(mpPhotonCellCounters->getUAV().get(), uint4(0));
     pRenderContext->clearUAV(mpPhotonIndexBuffer->getUAV().get(), uint4(0));
@@ -548,6 +554,7 @@ void WorldSpaceReSTIRGIPass::TraceCausticPhotons(RenderContext* pRenderContext)
     vars["PhotonTracingCB"]["gTotalPhotons"] = mPtOptions.photonsPerFrame;
     vars["PhotonTracingCB"]["gSceneBBMin"] = sceneBBMin;
     vars["PhotonTracingCB"]["gCellSize"] = cellSize;
+    vars["PhotonTracingCB"]["gHashTableSize"] = 100000u;
     
     // Set buffers
     vars["gPhotonBuffer"] = mpPhotonBuffer;
@@ -558,11 +565,13 @@ void WorldSpaceReSTIRGIPass::TraceCausticPhotons(RenderContext* pRenderContext)
     // Set scene and samplers
     vars["gScene"] = mpScene->getParameterBlock();
     if (mpEmissiveSampler) mpEmissiveSampler->setShaderData(vars["gEmissiveSampler"]);
-    if (mpEnvMapSampler) mpEnvMapSampler->setShaderData(vars["gEnvMapSampler"]);
     
     // Dispatch photon tracing
     mpScene->raytrace(pRenderContext, mPhotonTracingPass.mpProgram.get(), mPhotonTracingPass.mpVars, 
         uint3(mPtOptions.photonsPerFrame, 1u, 1u));
+    
+    // UAV barrier to ensure writes are visible
+    pRenderContext->uavBarrier(mpPhotonBuffer.get());
 }
 
 void WorldSpaceReSTIRGIPass::BuildPhotonHashGrid(RenderContext* pRenderContext)
@@ -570,8 +579,10 @@ void WorldSpaceReSTIRGIPass::BuildPhotonHashGrid(RenderContext* pRenderContext)
     PROFILE("BuildPhotonHashGrid");
     
     // Run prefix sum on cell counters to get index buffer
-    pRenderContext->copyBufferRegion(mpPhotonIndexBuffer.get(), 0, mpPhotonCellCounters.get(), 0, mpPhotonCellCounters->getSize());
-    mpPhotonPrefixSum->execute(pRenderContext, mpPhotonIndexBuffer, static_cast<uint32_t>(mpPhotonIndexBuffer->getSize()));
+    // Hash table has 100000 * 32 = 3,200,000 cells
+    uint32_t numCells = 100000u * 32u;
+    pRenderContext->copyBufferRegion(mpPhotonIndexBuffer.get(), 0, mpPhotonCellCounters.get(), 0, numCells * sizeof(uint32_t));
+    mpPhotonPrefixSum->execute(pRenderContext, mpPhotonIndexBuffer, numCells);
     
     // Build hash grid
     auto vars = mpBuildPhotonHashGridPass->getRootVar();
