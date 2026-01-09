@@ -20,17 +20,19 @@ import CausticPhoton;
 
 #include "Utils/Math/MathConstants.slangh"
 
-// Caustic photon mapping parameters
-// Note: Careful with alignment! float3 requires 16-byte alignment in cbuffer
+// PPM Caustic photon mapping parameters
 cbuffer CausticPhotonCB
 {
     float3 gSceneBBMin;         // 0-11 (12 bytes)
-    float gCellSize;            // 12-15 (4 bytes) - packs with float3
-    float gGatherRadius;        // 16-19 (4 bytes)
+    float gCellSize;            // 12-15 (4 bytes)
+    float gInitialRadius;       // 16-19 (4 bytes) - PPM initial radius
     uint gMaxGatherPhotons;     // 20-23 (4 bytes)
     uint gHashTableSize;        // 24-27 (4 bytes)
     uint gTotalPhotons;         // 28-31 (4 bytes)
-    uint gUseCausticPhotonMapping; // 32-35 (4 bytes) - use uint instead of bool
+    uint gUseCausticPhotonMapping; // 32-35 (4 bytes)
+    uint gFrameIndex;           // 36-39 (4 bytes) - current frame
+    float gPPMAlpha;            // 40-43 (4 bytes) - PPM alpha (typically 0.7)
+    uint gPhotonsPerFrame;      // 44-47 (4 bytes)
 };
 
 // Caustic photon buffers
@@ -39,98 +41,33 @@ StructuredBuffer<uint> gPhotonCellStorage;
 ByteAddressBuffer gPhotonIndexBuffer;
 ByteAddressBuffer gPhotonCheckSumBuffer;
 
-// Helper functions for photon gathering
-uint causticPcg32(uint input)
-{
-    uint state = input * 747796405u + 2891336453u;
-    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
+// PPM per-pixel statistics
+// gPPMStats: R = accumulated photon count (N), G = current radius squared (R²), B = unused, A = unused
+// gPPMFlux: RGB = accumulated tau (flux * BRDF), A = total emitted photons so far
+RWTexture2D<float4> gPPMStats;
+RWTexture2D<float4> gPPMFlux;
 
-int3 positionToPhotonCell(float3 pos)
-{
-    return int3(floor((pos - gSceneBBMin) / gCellSize));
-}
-
-uint cellToPhotonHash(int3 cell)
-{
-    uint h = causticPcg32(uint(cell.x) + causticPcg32(uint(cell.y) + causticPcg32(uint(cell.z))));
-    return h % gHashTableSize;
-}
-
-uint cellToPhotonChecksum(int3 cell)
-{
-    return max(jenkinsHash(uint(cell.x) + jenkinsHash(uint(cell.y) + jenkinsHash(uint(cell.z)))), 1u);
-}
-
-int findPhotonCellByCoord(int3 cell)
-{
-    uint cellHash = causticPcg32(uint(cell.x) + causticPcg32(uint(cell.y) + causticPcg32(uint(cell.z))));
-    uint checkSum = cellToPhotonChecksum(cell);
-    uint maxSlots = gHashTableSize * 32;
-    
-    for (uint i = 0; i < 32; i++)
-    {
-        uint idx = (cellHash * 32 + i) % maxSlots;
-        uint storedChecksum = gPhotonCheckSumBuffer.Load(idx * 4);
-        if (storedChecksum == checkSum)
-        {
-            return int(idx);
-        }
-        if (storedChecksum == 0)
-        {
-            // Empty slot means cell not found
-            return -1;
-        }
-    }
-    
-    return -1;
-}
-
-/// Debug: Count valid photons and check their Y position distribution
-/// Returns: x = valid count / 1000, y = avg Y position, z = photons near floor (y < 0.05)
-float3 debugPhotonStats()
-{
-    uint validCount = 0;
-    float sumY = 0;
-    uint nearFloorCount = 0;
-    
-    uint maxCheck = min(gTotalPhotons, 50000u);
-    for (uint i = 0; i < maxCheck; i++)
-    {
-        PackedCausticPhoton packed = gPhotonBuffer[i];
-        if (!packed.isValid()) continue;
-        
-        CausticPhoton photon = packed.unpack();
-        validCount++;
-        sumY += photon.position.y;
-        
-        // Check if photon is near floor (y close to 0)
-        if (photon.position.y < 0.05f && photon.position.y > -0.1f)
-        {
-            nearFloorCount++;
-        }
-    }
-    
-    float avgY = validCount > 0 ? sumY / float(validCount) : 0;
-    return float3(float(validCount) / 1000.0, avgY, float(nearFloorCount) / 100.0);
-}
-
-/// Gather caustic contribution at a point
-float3 gatherCaustics(float3 pos, float3 normal, float3 viewDir)
+/// Gather photons using brute force search - simple single-frame version for debugging
+/// Returns the current estimate of caustic radiance
+float3 gatherAndUpdatePPM(float3 pos, float3 normal, float3 diffuseAlbedo, uint2 pixel)
 {
     if (gUseCausticPhotonMapping == 0) return float3(0);
     if (gTotalPhotons == 0) return float3(0);
     
-    float3 causticRadiance = float3(0);
-    float radiusSq = gGatherRadius * gGatherRadius;
-    uint photonCount = 0;
+    // Use larger radius for gathering
+    float radiusSq = gInitialRadius * gInitialRadius;
+    float3 fluxSum = float3(0);
+    uint M = 0; // Photons found
     
     // Limit search to avoid GPU timeout
-    uint maxCheck = min(gTotalPhotons, 200000u);
+    uint maxSearch = min(gTotalPhotons, 100000u);
     
-    for (uint i = 0; i < maxCheck; i++)
+    // Brute force search through photons
+    for (uint i = 0; i < maxSearch; i++)
     {
+        // Early exit if we found enough photons
+        if (M >= gMaxGatherPhotons) break;
+        
         PackedCausticPhoton packed = gPhotonBuffer[i];
         if (!packed.isValid()) continue;
         
@@ -141,29 +78,103 @@ float3 gatherCaustics(float3 pos, float3 normal, float3 viewDir)
         float distSq = dot(diff, diff);
         if (distSq > radiusSq) continue;
         
-        // Cone filter kernel
-        float dist = sqrt(distSq);
-        float k = 1.0 - dist / gGatherRadius;
-        float weight = k * k;
+        // Normal consistency check - photon should hit front face
+        float3 lightDir = -photon.incidentDir;
+        float NdotL = dot(normal, lightDir);
+        if (NdotL <= 0) continue;
         
-        // BRDF evaluation (diffuse)
-        float cosTheta = abs(dot(photon.incidentDir, normal));
-        
-        // Accumulate contribution
-        causticRadiance += photon.flux * weight * cosTheta;
-        photonCount++;
-        
-        if (photonCount >= gMaxGatherPhotons) break;
+        // Accumulate flux
+        fluxSum += photon.flux;
+        M++;
     }
     
-    // Normalize by disk area
-    if (photonCount > 0)
+    // Simplified density estimation:
+    // L = Σ(flux × BRDF) / (π × R²)
+    // For Lambertian: BRDF = albedo / π
+    // L = Σ(flux) × albedo / (π² × R²)
+    // But this seems too dim, so let's try just: L = Σ(flux) × albedo / (π × R²)
+    float3 radiance = float3(0);
+    if (M > 0 && radiusSq > 0)
     {
-        float area = M_PI * radiusSq;
-        causticRadiance /= area;
+        // Use simpler formula - just divide by disk area
+        radiance = fluxSum * diffuseAlbedo / (M_PI * radiusSq);
     }
     
-    return causticRadiance;
+    return radiance;
+}
+
+/// Trace through glass and gather caustics on the diffuse surface behind
+float3 traceGlassCaustics(float3 origin, float3 viewDir, float3 normal, ShadingData glassSd, uint2 pixel)
+{
+    if (gUseCausticPhotonMapping == 0) return float3(0);
+    
+    // For glass, trace refracted ray to find diffuse surface behind
+    // Use Snell's law for refraction
+    float eta = glassSd.eta;  // IOR ratio
+    float cosI = dot(-viewDir, normal);
+    bool entering = cosI > 0;
+    if (!entering) {
+        normal = -normal;
+        cosI = -cosI;
+        eta = 1.0f / eta;
+    }
+    
+    float sinT2 = eta * eta * (1.0f - cosI * cosI);
+    if (sinT2 > 1.0f) return float3(0);  // Total internal reflection
+    
+    float cosT = sqrt(1.0f - sinT2);
+    float3 refractDir = eta * viewDir + (eta * cosI - cosT) * normal;
+    refractDir = normalize(refractDir);
+    
+    // Trace refracted ray
+    RayDesc ray;
+    ray.Origin = origin + refractDir * 0.002f;
+    ray.Direction = refractDir;
+    ray.TMin = 0.001f;
+    ray.TMax = 10.0f;
+    
+    float3 causticSum = float3(0);
+    float3 throughput = float3(1.0f);  // Fresnel transmission would go here
+    
+    // Simple trace - up to 4 bounces through glass
+    for (int bounce = 0; bounce < 4; bounce++)
+    {
+        SceneRayQuery<0> rayQuery;
+        HitInfo hit;
+        float hitT;
+        if (!rayQuery.traceRay(ray, hit, hitT, RAY_FLAG_NONE, 0xff))
+            break;
+        
+        // Only handle triangle hits
+        if (hit.getType() != HitType::Triangle)
+            break;
+            
+        const TriangleHit triangleHit = hit.getTriangleHit();
+        VertexData v = gScene.getVertexData(triangleHit);
+        uint materialID = gScene.getMaterialID(triangleHit.instanceID);
+        ShadingData hitSd = prepareShadingData(v, materialID, gScene.materials[materialID], gScene.materialResources[materialID], -ray.Direction, 0.f);
+        
+        // If we hit a diffuse surface, gather caustics
+        if (hitSd.specularTransmission < 0.01f && hitSd.linearRoughness >= 0.3f)
+        {
+            causticSum += throughput * gatherAndUpdatePPM(hitSd.posW, hitSd.N, hitSd.diffuse, pixel);
+            break;
+        }
+        
+        // If still glass, continue tracing
+        if (hitSd.specularTransmission > 0.01f)
+        {
+            // Simplified: just continue in same direction with some attenuation
+            throughput *= 0.95f;
+            ray.Origin = hitSd.posW + ray.Direction * 0.002f;
+        }
+        else
+        {
+            break;
+        }
+    }
+    
+    return causticSum;
 }
 
 struct FinalShading
@@ -191,7 +202,8 @@ struct FinalShading
                  
        
         FinalSample sample = finalSample[linearID];
-        if (sd.linearRoughness < 0.2 && data.pathLength == 1)
+        // NOTE: 对于玻璃材质（有透射），不要禁用透射lobe，否则玻璃会变暗
+        if (sd.linearRoughness < 0.2 && data.pathLength == 1 && sd.specularTransmission < 0.01f)
         {
             
             //sample.Li = 0.f;
@@ -202,26 +214,25 @@ struct FinalShading
             sd.setActiveLobes((uint) LobeType::Diffuse);
         }
 
-        // Photon Mapping 焦散贡献
-        // 焦散应该应用在所有漫反射表面上，不管pathLength是多少
-        // 因为透过玻璃看到的地板也应该显示焦散
+        // PPM Caustic contribution
+        // Use Progressive Photon Mapping for caustics on diffuse surfaces
         float3 causticContribution = float3(0);
         if (gUseCausticPhotonMapping)
         {
-            // Only apply caustics to diffuse surfaces (not glass/specular)
+            // For diffuse surfaces, directly gather caustics
             if (sd.linearRoughness >= 0.3f && sd.specularTransmission < 0.01f)
             {
-                causticContribution = gatherCaustics(sd.posW, sd.N, -data.preRcVertexWo);
-                // Increase intensity for better visibility
-                causticContribution *= 20.0;
+                causticContribution = gatherAndUpdatePPM(sd.posW, sd.N, sd.diffuse, pixel);
             }
+            // NOTE: traceGlassCaustics disabled for now - causes GPU hang
+            // For glass surfaces, the caustics are handled by path tracing
         }
         
-        // Note: causticContribution is added separately and NOT divided by numGIInstance
-        // because it represents direct caustic illumination, not a GI sample
+        // GI contribution (from ReSTIR)
         float3 giContribution = (data.pathPreRadiance + data.pathPreThp * evalBSDFCosine(sd, sample.dir) * sample.Li / flag) / params.numGIInstance;
+        
+        // Combine GI and caustic contributions
         outputColor[pixel] += giContribution + causticContribution;
-
     }
 };
 

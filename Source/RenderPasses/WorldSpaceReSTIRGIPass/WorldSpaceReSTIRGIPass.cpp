@@ -141,6 +141,14 @@ void WorldSpaceReSTIRGIPass::execute(RenderContext* pRenderContext, const Render
     if (mPtOptions.useCausticPhotonMapping && mpScene->useEmissiveLights())
     {
         UpdatePhotonResources();
+        
+        // Clear PPM statistics on first frame
+        if (params.frameCount == 0)
+        {
+            if (mpPPMStatisticsBuffer) pRenderContext->clearUAV(mpPPMStatisticsBuffer->getUAV().get(), float4(0.f));
+            if (mpPPMFluxBuffer) pRenderContext->clearUAV(mpPPMFluxBuffer->getUAV().get(), float4(0.f));
+        }
+        
         TraceCausticPhotons(pRenderContext);
         BuildPhotonHashGrid(pRenderContext);
     }
@@ -178,16 +186,17 @@ void WorldSpaceReSTIRGIPass::renderUI(Gui::Widgets& widget)
         staticDirty |= widget.var("gibounce", mPtOptions.maxBounces, 1u, 10u);
     }
     
-    // Caustic Photon Mapping UI
-    if (widget.group("Caustic Photon Mapping", true))
+    // Caustic Photon Mapping UI (PPM)
+    if (widget.group("Caustic Photon Mapping (PPM)", true))
     {
         runtimeDirty |= widget.checkbox("Enable Caustics", mPtOptions.useCausticPhotonMapping);
         if (mPtOptions.useCausticPhotonMapping)
         {
-            runtimeDirty |= widget.var("Photons per frame", mPtOptions.photonsPerFrame, 10000u, 1000000u);
+            runtimeDirty |= widget.var("Photons per frame", mPtOptions.photonsPerFrame, 10000u, 2000000u);
             runtimeDirty |= widget.var("Max photon bounces", mPtOptions.maxPhotonBounces, 1u, 16u);
-            runtimeDirty |= widget.var("Gather radius", mPtOptions.photonGatherRadius, 0.01f, 1.0f);
-            runtimeDirty |= widget.var("Max gather photons", mPtOptions.maxGatherPhotons, 10u, 500u);
+            runtimeDirty |= widget.var("Initial radius", mPtOptions.photonInitialRadius, 0.01f, 1.0f);
+            runtimeDirty |= widget.var("Max gather photons", mPtOptions.maxGatherPhotons, 50u, 5000u);
+            runtimeDirty |= widget.var("PPM Alpha", mPtOptions.ppmAlpha, 0.5f, 0.95f);
         }
     }
 
@@ -445,7 +454,7 @@ void WorldSpaceReSTIRGIPass::FinalShading(RenderContext* pRenderContext, const R
 
     vars["gScene"] = mpScene->getParameterBlock();
     
-    // Set caustic photon mapping parameters using struct to ensure correct layout
+    // Set PPM caustic photon mapping parameters
     float3 sceneBBMin = mpScene->getSceneBounds().minPoint - float3(0.1f, 0.1f, 0.1f);
     float3 boundingSize = abs(mpScene->getSceneBounds().maxPoint - mpScene->getSceneBounds().minPoint);
     float cellSize = std::max(boundingSize.x, std::max(boundingSize.y, boundingSize.z)) / 80.0f;
@@ -453,11 +462,14 @@ void WorldSpaceReSTIRGIPass::FinalShading(RenderContext* pRenderContext, const R
     CausticPhotonCBData cbData;
     cbData.sceneBBMin = sceneBBMin;
     cbData.cellSize = cellSize;
-    cbData.gatherRadius = mPtOptions.photonGatherRadius;
+    cbData.initialRadius = mPtOptions.photonInitialRadius;
     cbData.maxGatherPhotons = mPtOptions.maxGatherPhotons;
     cbData.hashTableSize = 100000u;
     cbData.totalPhotons = mPtOptions.photonsPerFrame;
     cbData.useCausticPhotonMapping = (mPtOptions.useCausticPhotonMapping && mpScene->useEmissiveLights()) ? 1u : 0u;
+    cbData.frameIndex = params.frameCount;
+    cbData.ppmAlpha = mPtOptions.ppmAlpha;
+    cbData.photonsPerFrame = mPtOptions.photonsPerFrame;
     
     vars["CausticPhotonCB"].setBlob(cbData);
     
@@ -466,6 +478,10 @@ void WorldSpaceReSTIRGIPass::FinalShading(RenderContext* pRenderContext, const R
     if (mpPhotonCellStorage) vars["gPhotonCellStorage"] = mpPhotonCellStorage;
     if (mpPhotonIndexBuffer) vars["gPhotonIndexBuffer"] = mpPhotonIndexBuffer;
     if (mpPhotonCheckSumBuffer) vars["gPhotonCheckSumBuffer"] = mpPhotonCheckSumBuffer;
+    
+    // Set PPM statistics buffers
+    if (mpPPMStatisticsBuffer) vars["gPPMStats"] = mpPPMStatisticsBuffer;
+    if (mpPPMFluxBuffer) vars["gPPMFlux"] = mpPPMFluxBuffer;
 
     mpFinalShadingPass->execute(pRenderContext, uint3(params.frameDim.x, params.frameDim.y, 1u));
 }
@@ -525,6 +541,22 @@ void WorldSpaceReSTIRGIPass::UpdatePhotonResources()
             Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
             Buffer::CpuAccess::None);
         mpPhotonCellCounters->setName("PhotonCellCounters");
+    }
+    
+    // Create PPM per-pixel statistics buffers
+    uint2 frameDim = params.frameDim;
+    if (!mpPPMStatisticsBuffer || mpPPMStatisticsBuffer->getWidth() != frameDim.x || mpPPMStatisticsBuffer->getHeight() != frameDim.y)
+    {
+        mpPPMStatisticsBuffer = Texture::create2D(frameDim.x, frameDim.y, ResourceFormat::RGBA32Float, 1, 1,
+            nullptr, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess);
+        mpPPMStatisticsBuffer->setName("PPMStatisticsBuffer");
+    }
+    
+    if (!mpPPMFluxBuffer || mpPPMFluxBuffer->getWidth() != frameDim.x || mpPPMFluxBuffer->getHeight() != frameDim.y)
+    {
+        mpPPMFluxBuffer = Texture::create2D(frameDim.x, frameDim.y, ResourceFormat::RGBA32Float, 1, 1,
+            nullptr, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess);
+        mpPPMFluxBuffer->setName("PPMFluxBuffer");
     }
 }
 

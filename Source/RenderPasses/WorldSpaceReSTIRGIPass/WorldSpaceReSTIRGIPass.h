@@ -99,13 +99,14 @@ private:
         bool usedReSTIRDI = false;
         bool usedNEE = true;
         bool usedMIS = true;
-        uint maxBounces = 15u;
-        // Caustic Photon Mapping options
+        uint maxBounces = 25u;  // 增加弹射次数以支持玻璃内部多重折射
+        // Caustic Photon Mapping options (PPM-style)
         bool useCausticPhotonMapping = false;
-        uint photonsPerFrame = 200000u;  // Increased for better coverage
+        uint photonsPerFrame = 100000u;  // Photons per frame
         uint maxPhotonBounces = 10u;     // Bounces for glass
-        float photonGatherRadius = 0.08f; // Larger radius for more photon hits
-        uint maxGatherPhotons = 200u;    // More photons per gather
+        float photonInitialRadius = 0.15f; // Larger gather radius
+        uint maxGatherPhotons = 500u;    // Max photons per gather
+        float ppmAlpha = 0.7f;           // PPM radius reduction parameter (0.6-0.9)
     } mPtOptions;
 
     bool mOptionChanged = false;
@@ -128,6 +129,10 @@ private:
     Buffer::SharedPtr mpPhotonCheckSumBuffer;   // Hash grid checksum
     Buffer::SharedPtr mpPhotonCellCounters;     // Hash grid cell counters
     PrefixSum::SharedPtr mpPhotonPrefixSum;     // For building hash grid
+    
+    // PPM per-pixel statistics buffer (for progressive accumulation)
+    Texture::SharedPtr mpPPMStatisticsBuffer;   // RGBA32Float: R=accumulated photon count, G=radius², B,A=unused
+    Texture::SharedPtr mpPPMFluxBuffer;         // RGBA32Float: accumulated flux (RGB) + total emitted photons (A)
 
     Scene::SharedPtr mpScene;
     SampleGenerator::SharedPtr mpSampleGenerator;
@@ -137,16 +142,19 @@ private:
 
     PTRuntimeParams params;
 
-    // Caustic Photon CB - must match shader layout exactly (36 bytes)
+    // Caustic Photon CB - must match shader layout exactly (48 bytes)
     struct CausticPhotonCBData
     {
         float3 sceneBBMin;          // 0-11
         float cellSize;             // 12-15
-        float gatherRadius;         // 16-19
+        float initialRadius;        // 16-19 - PPM initial radius
         uint32_t maxGatherPhotons;  // 20-23
         uint32_t hashTableSize;     // 24-27
         uint32_t totalPhotons;      // 28-31
         uint32_t useCausticPhotonMapping; // 32-35
+        uint32_t frameIndex;        // 36-39 - current frame for PPM
+        float ppmAlpha;             // 40-43 - PPM alpha parameter
+        uint32_t photonsPerFrame;   // 44-47 - photons emitted this frame
     };
 
     uint pad = 0;

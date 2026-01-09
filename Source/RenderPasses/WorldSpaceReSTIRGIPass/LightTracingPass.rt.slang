@@ -79,25 +79,35 @@ bool sampleLightPhoton(inout SampleGenerator sg, out float3 origin, out float3 d
     float lz = lerp(-halfSize, halfSize, uPos.y);
     float3 lightPos = float3(lx, 0.548f, lz);
     
-    // Sample direction on hemisphere (cosine-weighted, pointing down)
+    // Sample direction on hemisphere (cosine-weighted, pointing down into the scene)
     float2 uDir = sampleNext2D(sg);
     float pdf;
     float3 localDir = sample_cosine_hemisphere_concentric(uDir, pdf);
     
-    // Transform to world space - light normal is (0, -1, 0) pointing down
-    // localDir.z is along normal, localDir.x/y are tangent/bitangent
+    // Transform to world space
+    // Light emits downward, so light normal is (0, -1, 0)
+    // localDir.z is the "up" direction in local space (along normal)
+    // We need to map this to world space where "up" is (0, -1, 0)
     float3 tangent = float3(1, 0, 0);
     float3 bitangent = float3(0, 0, 1);
-    float3 normal = float3(0, -1, 0);
-    direction = normalize(localDir.x * tangent + localDir.y * bitangent + localDir.z * normal);
+    float3 lightNormal = float3(0, -1, 0);
     
-    // Offset origin to avoid self-intersection
-    origin = lightPos + normal * 0.001f;
+    // localDir = (x, y, z) where z is along normal
+    direction = normalize(localDir.x * tangent + localDir.y * bitangent + localDir.z * lightNormal);
     
-    // Light flux: Le * area * pi (emissiveFactor = 5 in scene)
+    // Offset origin slightly in the emission direction to avoid self-intersection
+    origin = lightPos + direction * 0.001f;
+    
+    // Physically correct flux calculation:
+    // For a Lambertian emitter with radiance Le:
+    // - Total power (Phi) = Le * A * pi
+    // - Each photon carries: Phi / N (where N = total photons, divided later in RayGen)
+    // - Cosine-weighted sampling PDF = cos(theta) / pi
+    // - The weight = Le * cos(theta) / PDF = Le * cos(theta) / (cos(theta)/pi) = Le * pi
+    // - So flux per photon = Le * pi * A (area is for uniform position sampling)
     float lightArea = 0.13f * 0.13f;
     float3 Le = float3(17.0f, 12.0f, 4.0f) * 5.0f;  // emissiveColor * emissiveFactor
-    flux = Le * lightArea * M_PI;
+    flux = Le * M_PI * lightArea;
     
     return true;
 }

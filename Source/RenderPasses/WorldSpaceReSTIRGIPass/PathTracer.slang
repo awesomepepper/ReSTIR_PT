@@ -478,6 +478,8 @@ struct PathTracer
                 pathState.SetDelta();
             else if (bsdfSample.isLobe(LobeType::SpecularReflection))
                 pathState.SetSpecular();
+            else if (bsdfSample.isLobe(LobeType::SpecularTransmission))
+                pathState.SetSpecular(); // 透射也是镜面事件
             else if (bsdfSample.isLobe(LobeType::DiffuseReflection))
                 pathState.SetDiffuseBounce();
 
@@ -487,11 +489,13 @@ struct PathTracer
             bool vertexClassifiedAsRough = !(sd.linearRoughness < kRoughnessThreshold && pathState.IsSpecularBounce());
             pathState.isLastVertexClassifiedAsRough = vertexClassifiedAsRough;
 
-            if (pathState.currentVertexIndex < pathState.rcVertexLength && vertexClassifiedAsRough)
+            // NOTE: 对于玻璃材质，不要截断重连接长度，允许透射路径充分延伸
+            if (pathState.currentVertexIndex < pathState.rcVertexLength && vertexClassifiedAsRough && sd.specularTransmission < 0.01f)
                 pathState.rcVertexLength = pathState.currentVertexIndex + 1;
 
             // ? 这个if在做什么
-            if (pathState.currentVertexIndex == 1 && sd.linearRoughness < kRoughnessThreshold)
+            // NOTE: 对于玻璃材质（有透射），跳过这个处理，保持完整的透射路径
+            if (pathState.currentVertexIndex == 1 && sd.linearRoughness < kRoughnessThreshold && sd.specularTransmission < 0.01f)
             {
                 const uint activeLobes = sd.getActiveLobes();
                 if ((activeLobes & (uint)LobeType::DiffuseReflection) && (activeLobes & (uint)LobeType::SpecularReflection))
@@ -582,7 +586,8 @@ struct PathTracer
         // ? 真的有必要做这样的tradeoff吗？在复用阶段这样的不适合重用的样本权重不应该会很低、直接不用不就好了？
         // 选择第一个粗糙表面为重连接点解决了一部分问题，但重连接点之后的点是光滑表面的情况仍不适合重用
         // 因此这里直接强制这样的光滑表面只使用漫反射lobe，牺牲了物理准确性换得可以有效复用的样本
-        if (pathState.isLastVertexClassifiedAsRough && sd.linearRoughness <= kRoughnessThreshold)
+        // NOTE: 对于玻璃材质（有透射），不要禁用透射lobe，否则玻璃会变暗
+        if (pathState.isLastVertexClassifiedAsRough && sd.linearRoughness <= kRoughnessThreshold && sd.specularTransmission < 0.01f)
         {
             sd.setActiveLobes((uint)LobeType::Diffuse);
         }
