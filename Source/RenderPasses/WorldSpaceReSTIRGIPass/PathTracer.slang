@@ -576,8 +576,9 @@ struct PathTracer
 
         pathState.norm = sd.N;
 
-        // ? 干啥的
-        bool isLightSamplable = !pathState.IsDelta();
+        // 对于 Delta 弹射或 Specular 弹射后的表面，NEE 效率很低，不应该只依赖 NEE
+        // 这样可以解决玻璃兔子背部和脚底变黑的问题
+        bool isLightSamplable = !pathState.IsDelta() && !pathState.IsSpecularBounce();
         // 是否计算自发光（指光线弹射命中自发光表面时要不要加上其radiance）
         bool computeEmissive = isPrimaryHit || (!kUsedNEE || kUsedMIS || !pathState.IsLightSampled() || !isLightSamplable);
         if (kUsedReSTIRDI && pathState.currentVertexIndex == 2)
@@ -715,10 +716,14 @@ struct PathTracer
             pathState.preRcVertexWo = pathState.direction;
         }
 
+        // 保存当前的 isLightSamplable 状态，因为 ClearEventFlags 会清除 Specular 标志
+        bool wasLightSamplable = isLightSamplable;
+
         pathState.ClearEventFlags();
         bool valid = GenerateScatterRay(sd, lod, rayOrigin, pathState);
 
-        if (HasFinishedScatter(pathState) && kUsedNEE && !kUsedMIS && pathState.IsLightSampled())
+        // 对于 Specular 弹射后的路径，不要因为 NEE 而终止，让 BSDF 采样继续
+        if (HasFinishedScatter(pathState) && kUsedNEE && !kUsedMIS && pathState.IsLightSampled() && wasLightSamplable)
             valid = false;
 
         /*if (pathState.isLastVertexClassifiedAsRough && pathState.IsSpecularBounce())
@@ -735,7 +740,8 @@ struct PathTracer
         printSetPixel(DispatchRaysIndex().xy);
         pathState.SetTerminate();
 
-        bool isLightSamplable = !pathState.IsDelta();
+        // 对于 Delta 弹射或 Specular 弹射后的表面，NEE 效率很低
+        bool isLightSamplable = !pathState.IsDelta() && !pathState.IsSpecularBounce();
         bool computeEnvironment = !kUsedNEE || kUsedMIS || !pathState.IsLightSampled() || !isLightSamplable;
         float3 envRadiance = envMapSampler.eval(pathState.direction);
         float misWeight = 1.f;
