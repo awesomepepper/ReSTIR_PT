@@ -85,7 +85,8 @@ struct SampleInitializer
                 float3 wo = normalize(sample.rcVertexPos - sample.preRcVertexPos);
 
                 uint sampleFlag = -1;
-                if (pathState.rcVertexLength == 2 && sd.linearRoughness < roughnessThreshold)
+                // NOTE: 对于玻璃材质（有透射），不要禁用透射lobe，否则玻璃会变暗
+                if (pathState.rcVertexLength == 2 && sd.linearRoughness < roughnessThreshold && sd.specularTransmission < 0.01f)
                 {
 
                     // sampleFlag = uint(SampledBSDFFlags::DiffuseReflection);

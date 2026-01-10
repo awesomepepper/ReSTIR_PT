@@ -36,6 +36,8 @@ namespace
     const std::string& kTracePassFilePath = "RenderPasses/WorldSpaceReSTIRGIPass/TracePass.rt.slang";
     const std::string& kFinalShadingFilePath = "RenderPasses/WorldSpaceReSTIRGIPass/FinalShading.cs.slang";
     const std::string& kReflectTypeFilePath = "RenderPasses/WorldSpaceReSTIRGIPass/ReflectTypes.cs.slang";
+    const std::string& kLightTracingPassFilePath = "RenderPasses/WorldSpaceReSTIRGIPass/LightTracingPass.rt.slang";
+    const std::string& kBuildPhotonHashGridFilePath = "RenderPasses/WorldSpaceReSTIRGIPass/BuildPhotonHashGrid.cs.slang";
 
     const std::string& kInputVBuffer = "vbuffer";
     const std::string& kInputDepthBuffer = "vDepth";
@@ -79,6 +81,7 @@ WorldSpaceReSTIRGIPass::WorldSpaceReSTIRGIPass()
 {
     mOptions = WorldSpaceReSTIRGI::Options::create();
     mpPixelDebug = PixelDebug::create();
+    mpPhotonPrefixSum = PrefixSum::create();
 }
 
 std::string WorldSpaceReSTIRGIPass::getDesc() { return kDesc; }
@@ -134,6 +137,22 @@ void WorldSpaceReSTIRGIPass::execute(RenderContext* pRenderContext, const Render
 
     mpPixelDebug->beginFrame(pRenderContext, params.frameDim);
 
+    // Trace caustic photons if enabled
+    if (mPtOptions.useCausticPhotonMapping && mpScene->useEmissiveLights())
+    {
+        UpdatePhotonResources();
+        
+        // Clear PPM statistics on first frame
+        if (params.frameCount == 0)
+        {
+            if (mpPPMStatisticsBuffer) pRenderContext->clearUAV(mpPPMStatisticsBuffer->getUAV().get(), float4(0.f));
+            if (mpPPMFluxBuffer) pRenderContext->clearUAV(mpPPMFluxBuffer->getUAV().get(), float4(0.f));
+        }
+        
+        TraceCausticPhotons(pRenderContext);
+        BuildPhotonHashGrid(pRenderContext);
+    }
+
     for (uint32_t i = 0; i < reSTIRInstances.size(); i++)
     {
         params.currentGIInstance = i;
@@ -165,6 +184,20 @@ void WorldSpaceReSTIRGIPass::renderUI(Gui::Widgets& widget)
         if (mPtOptions.usedNEE)
             staticDirty |= widget.checkbox("useMIS", mPtOptions.usedMIS);
         staticDirty |= widget.var("gibounce", mPtOptions.maxBounces, 1u, 10u);
+    }
+    
+    // Caustic Photon Mapping UI (PPM)
+    if (widget.group("Caustic Photon Mapping (PPM)", true))
+    {
+        runtimeDirty |= widget.checkbox("Enable Caustics", mPtOptions.useCausticPhotonMapping);
+        if (mPtOptions.useCausticPhotonMapping)
+        {
+            runtimeDirty |= widget.var("Photons per frame", mPtOptions.photonsPerFrame, 10000u, 2000000u);
+            runtimeDirty |= widget.var("Max photon bounces", mPtOptions.maxPhotonBounces, 1u, 16u);
+            runtimeDirty |= widget.var("Initial radius", mPtOptions.photonInitialRadius, 0.01f, 1.0f);
+            runtimeDirty |= widget.var("Max gather photons", mPtOptions.maxGatherPhotons, 50u, 5000u);
+            runtimeDirty |= widget.var("PPM Alpha", mPtOptions.ppmAlpha, 0.5f, 0.95f);
+        }
     }
 
     staticDirty |= widget.var("giInstance", numReSTIRInstances, 1u, 6u);
@@ -258,6 +291,31 @@ void WorldSpaceReSTIRGIPass::setScene(RenderContext* pRenderContext, const Scene
 
     mpReflectTypePass = ComputePass::create(Program::Desc(kReflectTypeFilePath).setShaderModel(kShaderMode).csEntry("main"), defines);
     mpFinalShadingPass = ComputePass::create(Program::Desc(kFinalShadingFilePath).setShaderModel(kShaderMode).csEntry("main"), defines);
+    mpBuildPhotonHashGridPass = ComputePass::create(Program::Desc(kBuildPhotonHashGridFilePath).setShaderModel(kShaderMode).csEntry("main"), defines);
+
+    // Setup Photon Tracing Pass
+    if (mpScene->useEmissiveLights())
+    {
+        RtProgram::Desc photonDesc;
+        photonDesc.addShaderLibrary(kLightTracingPassFilePath);
+        photonDesc.setShaderModel(kShaderMode);
+        photonDesc.setMaxAttributeSize(mpScene->getRaytracingMaxAttributeSize());
+        photonDesc.setMaxPayloadSize(kMaxPayloadSizeBytes);
+        photonDesc.setMaxTraceRecursionDepth(1);
+        
+        mPhotonTracingPass.mpBindTable = RtBindingTable::create(1, 1, mpScene->getGeometryCount());
+        mPhotonTracingPass.mpBindTable->setRayGen(photonDesc.addRayGen("PhotonRayGen"));
+        mPhotonTracingPass.mpBindTable->setMiss(0, photonDesc.addMiss("PhotonMiss"));
+        
+        if (mpScene->hasGeometryType(Scene::GeometryType::TriangleMesh))
+        {
+            mPhotonTracingPass.mpBindTable->setHitGroupByType(0, mpScene, Scene::GeometryType::TriangleMesh, photonDesc.addHitGroup("PhotonClosestHit", "PhotonAnyHit"));
+        }
+        
+        photonDesc.addDefines(defines);
+        mPhotonTracingPass.mpProgram = RtProgram::create(photonDesc);
+        mPhotonTracingPass.mpVars = RtProgramVars::create(mPhotonTracingPass.mpProgram, mPhotonTracingPass.mpBindTable);
+    }
 
     {
         reSTIRInstances.clear();
@@ -395,7 +453,178 @@ void WorldSpaceReSTIRGIPass::FinalShading(RenderContext* pRenderContext, const R
     vars["finalShading"]["finalSample"] = reSTIRInstances[currentInstance]->mpFinalSample;
 
     vars["gScene"] = mpScene->getParameterBlock();
+    
+    // Set PPM caustic photon mapping parameters
+    float3 sceneBBMin = mpScene->getSceneBounds().minPoint - float3(0.1f, 0.1f, 0.1f);
+    float3 boundingSize = abs(mpScene->getSceneBounds().maxPoint - mpScene->getSceneBounds().minPoint);
+    float cellSize = std::max(boundingSize.x, std::max(boundingSize.y, boundingSize.z)) / 80.0f;
+    
+    CausticPhotonCBData cbData;
+    cbData.sceneBBMin = sceneBBMin;
+    cbData.cellSize = cellSize;
+    cbData.initialRadius = mPtOptions.photonInitialRadius;
+    cbData.maxGatherPhotons = mPtOptions.maxGatherPhotons;
+    cbData.hashTableSize = 100000u;
+    cbData.totalPhotons = mPtOptions.photonsPerFrame;
+    cbData.useCausticPhotonMapping = (mPtOptions.useCausticPhotonMapping && mpScene->useEmissiveLights()) ? 1u : 0u;
+    cbData.frameIndex = params.frameCount;
+    cbData.ppmAlpha = mPtOptions.ppmAlpha;
+    cbData.photonsPerFrame = mPtOptions.photonsPerFrame;
+    
+    vars["CausticPhotonCB"].setBlob(cbData);
+    
+    // Set photon buffers
+    if (mpPhotonBuffer) vars["gPhotonBuffer"] = mpPhotonBuffer;
+    if (mpPhotonCellStorage) vars["gPhotonCellStorage"] = mpPhotonCellStorage;
+    if (mpPhotonIndexBuffer) vars["gPhotonIndexBuffer"] = mpPhotonIndexBuffer;
+    if (mpPhotonCheckSumBuffer) vars["gPhotonCheckSumBuffer"] = mpPhotonCheckSumBuffer;
+    
+    // Set PPM statistics buffers
+    if (mpPPMStatisticsBuffer) vars["gPPMStats"] = mpPPMStatisticsBuffer;
+    if (mpPPMFluxBuffer) vars["gPPMFlux"] = mpPPMFluxBuffer;
 
     mpFinalShadingPass->execute(pRenderContext, uint3(params.frameDim.x, params.frameDim.y, 1u));
 }
+
+void WorldSpaceReSTIRGIPass::UpdatePhotonResources()
+{
+    uint32_t photonCount = mPtOptions.photonsPerFrame;
+    
+    // Create photon buffer
+    if (!mpPhotonBuffer || mpPhotonBuffer->getElementCount() != photonCount)
+    {
+        mpPhotonBuffer = Buffer::createStructured(sizeof(float) * 8, photonCount, // PackedCausticPhoton size
+            Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
+            Buffer::CpuAccess::None, nullptr, false);
+        mpPhotonBuffer->setName("PhotonBuffer");
+    }
+    
+    // Create photon append buffer
+    if (!mpPhotonAppendBuffer || mpPhotonAppendBuffer->getElementCount() != photonCount)
+    {
+        mpPhotonAppendBuffer = Buffer::createStructured(sizeof(uint32_t) * 4, photonCount, // PhotonAppendData size
+            Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
+            Buffer::CpuAccess::None, nullptr, false);
+        mpPhotonAppendBuffer->setName("PhotonAppendBuffer");
+    }
+    
+    // Create photon cell storage
+    if (!mpPhotonCellStorage || mpPhotonCellStorage->getElementCount() != photonCount)
+    {
+        mpPhotonCellStorage = Buffer::createStructured(sizeof(uint32_t), photonCount,
+            Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
+            Buffer::CpuAccess::None, nullptr, false);
+        mpPhotonCellStorage->setName("PhotonCellStorage");
+    }
+    
+    // Create hash grid buffers
+    uint32_t hashBufferSize = 3200000 * sizeof(uint32_t);
+    if (!mpPhotonIndexBuffer)
+    {
+        mpPhotonIndexBuffer = Buffer::create(hashBufferSize,
+            Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
+            Buffer::CpuAccess::None);
+        mpPhotonIndexBuffer->setName("PhotonIndexBuffer");
+    }
+    
+    if (!mpPhotonCheckSumBuffer)
+    {
+        mpPhotonCheckSumBuffer = Buffer::create(hashBufferSize,
+            Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
+            Buffer::CpuAccess::None);
+        mpPhotonCheckSumBuffer->setName("PhotonCheckSumBuffer");
+    }
+    
+    if (!mpPhotonCellCounters)
+    {
+        mpPhotonCellCounters = Buffer::create(hashBufferSize,
+            Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
+            Buffer::CpuAccess::None);
+        mpPhotonCellCounters->setName("PhotonCellCounters");
+    }
+    
+    // Create PPM per-pixel statistics buffers
+    uint2 frameDim = params.frameDim;
+    if (!mpPPMStatisticsBuffer || mpPPMStatisticsBuffer->getWidth() != frameDim.x || mpPPMStatisticsBuffer->getHeight() != frameDim.y)
+    {
+        mpPPMStatisticsBuffer = Texture::create2D(frameDim.x, frameDim.y, ResourceFormat::RGBA32Float, 1, 1,
+            nullptr, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess);
+        mpPPMStatisticsBuffer->setName("PPMStatisticsBuffer");
+    }
+    
+    if (!mpPPMFluxBuffer || mpPPMFluxBuffer->getWidth() != frameDim.x || mpPPMFluxBuffer->getHeight() != frameDim.y)
+    {
+        mpPPMFluxBuffer = Texture::create2D(frameDim.x, frameDim.y, ResourceFormat::RGBA32Float, 1, 1,
+            nullptr, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess);
+        mpPPMFluxBuffer->setName("PPMFluxBuffer");
+    }
+}
+
+void WorldSpaceReSTIRGIPass::TraceCausticPhotons(RenderContext* pRenderContext)
+{
+    PROFILE("TraceCausticPhotons");
+    
+    if (!mPhotonTracingPass.mpProgram || !mPhotonTracingPass.mpVars) return;
+    if (!mpPhotonBuffer) return;
+    
+    // Clear buffers
+    pRenderContext->clearUAV(mpPhotonBuffer->getUAV().get(), uint4(0));
+    pRenderContext->clearUAV(mpPhotonCheckSumBuffer->getUAV().get(), uint4(0));
+    pRenderContext->clearUAV(mpPhotonCellCounters->getUAV().get(), uint4(0));
+    pRenderContext->clearUAV(mpPhotonIndexBuffer->getUAV().get(), uint4(0));
+    
+    auto vars = mPhotonTracingPass.mpVars->getRootVar();
+    
+    // Set photon tracing parameters
+    float3 sceneBBMin = mpScene->getSceneBounds().minPoint - float3(0.1f, 0.1f, 0.1f);
+    float3 boundingSize = abs(mpScene->getSceneBounds().maxPoint - mpScene->getSceneBounds().minPoint);
+    float cellSize = std::max(boundingSize.x, std::max(boundingSize.y, boundingSize.z)) / 80.0f;
+    
+    vars["PhotonTracingCB"]["gPhotonsPerLight"] = mPtOptions.photonsPerFrame;
+    vars["PhotonTracingCB"]["gMaxPhotonBounces"] = mPtOptions.maxPhotonBounces;
+    vars["PhotonTracingCB"]["gFrameCount"] = params.frameCount;
+    vars["PhotonTracingCB"]["gTotalPhotons"] = mPtOptions.photonsPerFrame;
+    vars["PhotonTracingCB"]["gSceneBBMin"] = sceneBBMin;
+    vars["PhotonTracingCB"]["gCellSize"] = cellSize;
+    vars["PhotonTracingCB"]["gHashTableSize"] = 100000u;
+    
+    // Set buffers
+    vars["gPhotonBuffer"] = mpPhotonBuffer;
+    vars["gPhotonAppendBuffer"] = mpPhotonAppendBuffer;
+    vars["gPhotonCheckSum"] = mpPhotonCheckSumBuffer;
+    vars["gPhotonCellCounters"] = mpPhotonCellCounters;
+    
+    // Set scene and samplers
+    vars["gScene"] = mpScene->getParameterBlock();
+    if (mpEmissiveSampler) mpEmissiveSampler->setShaderData(vars["gEmissiveSampler"]);
+    
+    // Dispatch photon tracing
+    mpScene->raytrace(pRenderContext, mPhotonTracingPass.mpProgram.get(), mPhotonTracingPass.mpVars, 
+        uint3(mPtOptions.photonsPerFrame, 1u, 1u));
+    
+    // UAV barrier to ensure writes are visible
+    pRenderContext->uavBarrier(mpPhotonBuffer.get());
+}
+
+void WorldSpaceReSTIRGIPass::BuildPhotonHashGrid(RenderContext* pRenderContext)
+{
+    PROFILE("BuildPhotonHashGrid");
+    
+    // Run prefix sum on cell counters to get index buffer
+    // Hash table has 100000 * 32 = 3,200,000 cells
+    uint32_t numCells = 100000u * 32u;
+    pRenderContext->copyBufferRegion(mpPhotonIndexBuffer.get(), 0, mpPhotonCellCounters.get(), 0, numCells * sizeof(uint32_t));
+    mpPhotonPrefixSum->execute(pRenderContext, mpPhotonIndexBuffer, numCells);
+    
+    // Build hash grid
+    auto vars = mpBuildPhotonHashGridPass->getRootVar();
+    vars["PhotonGridCB"]["gTotalPhotons"] = mPtOptions.photonsPerFrame;
+    vars["gPhotonAppendBuffer"] = mpPhotonAppendBuffer;
+    vars["gPhotonIndexBuffer"] = mpPhotonIndexBuffer;
+    vars["gPhotonCellStorage"] = mpPhotonCellStorage;
+    
+    uint32_t numGroups = (mPtOptions.photonsPerFrame + 255) / 256;
+    mpBuildPhotonHashGridPass->execute(pRenderContext, uint3(numGroups * 256, 1u, 1u));
+}
+
 
