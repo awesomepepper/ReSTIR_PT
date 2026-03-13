@@ -26,6 +26,7 @@
  # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  **************************************************************************/
 #include "WorldSpaceReSTIRGIPass.h"
+#include <glm/gtc/matrix_transform.hpp>
 
 
 namespace
@@ -38,6 +39,8 @@ namespace
     const std::string& kReflectTypeFilePath = "RenderPasses/WorldSpaceReSTIRGIPass/ReflectTypes.cs.slang";
     const std::string& kLightTracingPassFilePath = "RenderPasses/WorldSpaceReSTIRGIPass/LightTracingPass.rt.slang";
     const std::string& kBuildPhotonHashGridFilePath = "RenderPasses/WorldSpaceReSTIRGIPass/BuildPhotonHashGrid.cs.slang";
+    const std::string& kRSMGenerationFilePath = "RenderPasses/WorldSpaceReSTIRGIPass/RSMGeneration.cs.slang";
+    const std::string& kRSMPhotonTracingFilePath = "RenderPasses/WorldSpaceReSTIRGIPass/RSMPhotonTracing.rt.slang";
 
     const std::string& kInputVBuffer = "vbuffer";
     const std::string& kInputDepthBuffer = "vDepth";
@@ -149,7 +152,18 @@ void WorldSpaceReSTIRGIPass::execute(RenderContext* pRenderContext, const Render
             if (mpPPMFluxBuffer) pRenderContext->clearUAV(mpPPMFluxBuffer->getUAV().get(), float4(0.f));
         }
         
-        TraceCausticPhotons(pRenderContext);
+        if (mPtOptions.useRSMCaustics)
+        {
+            // RSM-based photon tracing
+            UpdateRSMResources();
+            GenerateRSM(pRenderContext);
+            TraceRSMPhotons(pRenderContext);
+        }
+        else
+        {
+            // Traditional random photon tracing
+            TraceCausticPhotons(pRenderContext);
+        }
         BuildPhotonHashGrid(pRenderContext);
     }
 
@@ -192,7 +206,19 @@ void WorldSpaceReSTIRGIPass::renderUI(Gui::Widgets& widget)
         runtimeDirty |= widget.checkbox("Enable Caustics", mPtOptions.useCausticPhotonMapping);
         if (mPtOptions.useCausticPhotonMapping)
         {
-            runtimeDirty |= widget.var("Photons per frame", mPtOptions.photonsPerFrame, 10000u, 2000000u);
+            runtimeDirty |= widget.checkbox("Use RSM (Image-Space)", mPtOptions.useRSMCaustics);
+            widget.tooltip("Use Reflective Shadow Maps for efficient photon generation.\nReference: Real-Time Caustics Using Cascaded Image-Space Photon Tracing");
+            
+            if (mPtOptions.useRSMCaustics)
+            {
+                runtimeDirty |= widget.var("RSM Resolution", mPtOptions.rsmResolution, 64u, 512u);
+                widget.tooltip("RSM texture resolution. Total photons = resolution^2");
+            }
+            else
+            {
+                runtimeDirty |= widget.var("Photons per frame", mPtOptions.photonsPerFrame, 10000u, 2000000u);
+            }
+            
             runtimeDirty |= widget.var("Max photon bounces", mPtOptions.maxPhotonBounces, 1u, 16u);
             runtimeDirty |= widget.var("Initial radius", mPtOptions.photonInitialRadius, 0.01f, 1.0f);
             runtimeDirty |= widget.var("Max gather photons", mPtOptions.maxGatherPhotons, 50u, 5000u);
@@ -465,11 +491,16 @@ void WorldSpaceReSTIRGIPass::FinalShading(RenderContext* pRenderContext, const R
     cbData.initialRadius = mPtOptions.photonInitialRadius;
     cbData.maxGatherPhotons = mPtOptions.maxGatherPhotons;
     cbData.hashTableSize = 100000u;
-    cbData.totalPhotons = mPtOptions.photonsPerFrame;
+    
+    // Use RSM resolution if RSM mode is enabled
+    uint32_t totalPhotons = mPtOptions.useRSMCaustics ? 
+        (mPtOptions.rsmResolution * mPtOptions.rsmResolution) : mPtOptions.photonsPerFrame;
+    
+    cbData.totalPhotons = totalPhotons;
     cbData.useCausticPhotonMapping = (mPtOptions.useCausticPhotonMapping && mpScene->useEmissiveLights()) ? 1u : 0u;
     cbData.frameIndex = params.frameCount;
     cbData.ppmAlpha = mPtOptions.ppmAlpha;
-    cbData.photonsPerFrame = mPtOptions.photonsPerFrame;
+    cbData.photonsPerFrame = totalPhotons;
     
     vars["CausticPhotonCB"].setBlob(cbData);
     
@@ -618,13 +649,211 @@ void WorldSpaceReSTIRGIPass::BuildPhotonHashGrid(RenderContext* pRenderContext)
     
     // Build hash grid
     auto vars = mpBuildPhotonHashGridPass->getRootVar();
-    vars["PhotonGridCB"]["gTotalPhotons"] = mPtOptions.photonsPerFrame;
+    
+    // Use RSM resolution if RSM mode is enabled
+    uint32_t totalPhotons = mPtOptions.useRSMCaustics ? 
+        (mPtOptions.rsmResolution * mPtOptions.rsmResolution) : mPtOptions.photonsPerFrame;
+    
+    vars["PhotonGridCB"]["gTotalPhotons"] = totalPhotons;
     vars["gPhotonAppendBuffer"] = mpPhotonAppendBuffer;
     vars["gPhotonIndexBuffer"] = mpPhotonIndexBuffer;
     vars["gPhotonCellStorage"] = mpPhotonCellStorage;
     
-    uint32_t numGroups = (mPtOptions.photonsPerFrame + 255) / 256;
+    uint32_t numGroups = (totalPhotons + 255) / 256;
     mpBuildPhotonHashGridPass->execute(pRenderContext, uint3(numGroups * 256, 1u, 1u));
 }
+
+void WorldSpaceReSTIRGIPass::UpdateRSMResources()
+{
+    uint32_t rsmRes = mPtOptions.rsmResolution;
+    uint32_t photonCount = rsmRes * rsmRes;
+    
+    // Create RSM textures
+    if (!mpRSMPosition || mpRSMPosition->getWidth() != rsmRes)
+    {
+        mpRSMPosition = Texture::create2D(rsmRes, rsmRes, ResourceFormat::RGBA32Float, 1, 1,
+            nullptr, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess);
+        mpRSMPosition->setName("RSMPosition");
+    }
+    
+    if (!mpRSMNormal || mpRSMNormal->getWidth() != rsmRes)
+    {
+        mpRSMNormal = Texture::create2D(rsmRes, rsmRes, ResourceFormat::RGBA32Float, 1, 1,
+            nullptr, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess);
+        mpRSMNormal->setName("RSMNormal");
+    }
+    
+    if (!mpRSMFlux || mpRSMFlux->getWidth() != rsmRes)
+    {
+        mpRSMFlux = Texture::create2D(rsmRes, rsmRes, ResourceFormat::RGBA32Float, 1, 1,
+            nullptr, Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess);
+        mpRSMFlux->setName("RSMFlux");
+    }
+    
+    // Resize photon buffers for RSM photon count
+    if (!mpPhotonBuffer || mpPhotonBuffer->getElementCount() != photonCount)
+    {
+        mpPhotonBuffer = Buffer::createStructured(sizeof(float) * 8, photonCount,
+            Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
+            Buffer::CpuAccess::None, nullptr, false);
+        mpPhotonBuffer->setName("PhotonBuffer");
+    }
+    
+    if (!mpPhotonAppendBuffer || mpPhotonAppendBuffer->getElementCount() != photonCount)
+    {
+        mpPhotonAppendBuffer = Buffer::createStructured(sizeof(uint32_t) * 4, photonCount,
+            Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
+            Buffer::CpuAccess::None, nullptr, false);
+        mpPhotonAppendBuffer->setName("PhotonAppendBuffer");
+    }
+    
+    if (!mpPhotonCellStorage || mpPhotonCellStorage->getElementCount() != photonCount)
+    {
+        mpPhotonCellStorage = Buffer::createStructured(sizeof(uint32_t), photonCount,
+            Resource::BindFlags::ShaderResource | Resource::BindFlags::UnorderedAccess,
+            Buffer::CpuAccess::None, nullptr, false);
+        mpPhotonCellStorage->setName("PhotonCellStorage");
+    }
+}
+
+void WorldSpaceReSTIRGIPass::GenerateRSM(RenderContext* pRenderContext)
+{
+    PROFILE("GenerateRSM");
+    
+    if (!mpRSMGenerationPass)
+    {
+        Program::Desc desc;
+        desc.addShaderLibrary(kRSMGenerationFilePath).setShaderModel(kShaderMode).csEntry("main");
+        desc.addTypeConformances(mpScene->getTypeConformances());
+        
+        Program::DefineList defines = mpScene->getSceneDefines();
+        mpRSMGenerationPass = ComputePass::create(desc, defines);
+    }
+    
+    if (!mpRSMGenerationPass) return;
+    
+    auto vars = mpRSMGenerationPass->getRootVar();
+    
+    // Set RSM generation parameters
+    // For Cornell Box area light at (0, 0.549, 0) pointing down
+    float4x4 lightView = glm::lookAt(
+        float3(0.0f, 0.549f, 0.0f),  // Light position
+        float3(0.0f, 0.0f, 0.0f),     // Look at center
+        float3(0.0f, 0.0f, 1.0f)      // Up vector
+    );
+    float4x4 lightProj = glm::perspective(glm::radians(90.0f), 1.0f, 0.01f, 10.0f);
+    float4x4 lightViewProj = lightProj * lightView;
+    
+    vars["RSMGenerationCB"]["gLightViewProj"] = lightViewProj;
+    vars["RSMGenerationCB"]["gLightView"] = lightView;
+    vars["RSMGenerationCB"]["gLightPosition"] = float3(0.0f, 0.548f, 0.0f);
+    vars["RSMGenerationCB"]["gLightIntensity"] = 5.0f;
+    vars["RSMGenerationCB"]["gLightColor"] = float3(17.0f, 12.0f, 4.0f);
+    vars["RSMGenerationCB"]["gRSMResolution"] = mPtOptions.rsmResolution;
+    vars["RSMGenerationCB"]["gLightDirection"] = float3(0.0f, -1.0f, 0.0f);
+    vars["RSMGenerationCB"]["gLightArea"] = 0.13f * 0.13f;
+    vars["RSMGenerationCB"]["gFrameCount"] = params.frameCount;
+    
+    // Set output textures
+    vars["gRSMPosition"] = mpRSMPosition;
+    vars["gRSMNormal"] = mpRSMNormal;
+    vars["gRSMFlux"] = mpRSMFlux;
+    
+    // Set scene
+    vars["gScene"] = mpScene->getParameterBlock();
+    
+    // Dispatch
+    uint32_t numGroups = (mPtOptions.rsmResolution + 15) / 16;
+    mpRSMGenerationPass->execute(pRenderContext, uint3(numGroups * 16, numGroups * 16, 1u));
+    
+    // UAV barrier
+    pRenderContext->uavBarrier(mpRSMPosition.get());
+    pRenderContext->uavBarrier(mpRSMNormal.get());
+    pRenderContext->uavBarrier(mpRSMFlux.get());
+}
+
+void WorldSpaceReSTIRGIPass::TraceRSMPhotons(RenderContext* pRenderContext)
+{
+    PROFILE("TraceRSMPhotons");
+    
+    // Create RSM photon tracing pass if needed
+    if (!mRSMPhotonTracingPass.mpProgram)
+    {
+        Program::DefineList defines = mpScene->getSceneDefines();
+        defines.add(mpSampleGenerator->getDefines());
+        
+        RtProgram::Desc rsmPhotonDesc;
+        rsmPhotonDesc.addShaderLibrary(kRSMPhotonTracingFilePath);
+        rsmPhotonDesc.setShaderModel(kShaderMode);
+        rsmPhotonDesc.setMaxAttributeSize(mpScene->getRaytracingMaxAttributeSize());
+        rsmPhotonDesc.setMaxPayloadSize(kMaxPayloadSizeBytes);
+        rsmPhotonDesc.setMaxTraceRecursionDepth(1);
+        
+        mRSMPhotonTracingPass.mpBindTable = RtBindingTable::create(1, 1, mpScene->getGeometryCount());
+        mRSMPhotonTracingPass.mpBindTable->setRayGen(rsmPhotonDesc.addRayGen("RSMPhotonRayGen"));
+        mRSMPhotonTracingPass.mpBindTable->setMiss(0, rsmPhotonDesc.addMiss("RSMPhotonMiss"));
+        
+        if (mpScene->hasGeometryType(Scene::GeometryType::TriangleMesh))
+        {
+            mRSMPhotonTracingPass.mpBindTable->setHitGroupByType(0, mpScene, Scene::GeometryType::TriangleMesh, 
+                rsmPhotonDesc.addHitGroup("RSMPhotonClosestHit", "RSMPhotonAnyHit"));
+        }
+        
+        rsmPhotonDesc.addDefines(defines);
+        mRSMPhotonTracingPass.mpProgram = RtProgram::create(rsmPhotonDesc);
+        mRSMPhotonTracingPass.mpVars = RtProgramVars::create(mRSMPhotonTracingPass.mpProgram, mRSMPhotonTracingPass.mpBindTable);
+    }
+    
+    if (!mRSMPhotonTracingPass.mpProgram || !mRSMPhotonTracingPass.mpVars) return;
+    if (!mpPhotonBuffer) return;
+    
+    uint32_t totalPhotons = mPtOptions.rsmResolution * mPtOptions.rsmResolution;
+    
+    // Clear buffers
+    pRenderContext->clearUAV(mpPhotonBuffer->getUAV().get(), uint4(0));
+    pRenderContext->clearUAV(mpPhotonCheckSumBuffer->getUAV().get(), uint4(0));
+    pRenderContext->clearUAV(mpPhotonCellCounters->getUAV().get(), uint4(0));
+    pRenderContext->clearUAV(mpPhotonIndexBuffer->getUAV().get(), uint4(0));
+    
+    auto vars = mRSMPhotonTracingPass.mpVars->getRootVar();
+    
+    // Set RSM photon tracing parameters
+    float3 sceneBBMin = mpScene->getSceneBounds().minPoint - float3(0.1f, 0.1f, 0.1f);
+    float3 boundingSize = abs(mpScene->getSceneBounds().maxPoint - mpScene->getSceneBounds().minPoint);
+    float cellSize = std::max(boundingSize.x, std::max(boundingSize.y, boundingSize.z)) / 80.0f;
+    
+    vars["RSMPhotonTracingCB"]["gRSMResolution"] = mPtOptions.rsmResolution;
+    vars["RSMPhotonTracingCB"]["gMaxPhotonBounces"] = mPtOptions.maxPhotonBounces;
+    vars["RSMPhotonTracingCB"]["gFrameCount"] = params.frameCount;
+    vars["RSMPhotonTracingCB"]["gTotalPhotons"] = totalPhotons;
+    vars["RSMPhotonTracingCB"]["gSceneBBMin"] = sceneBBMin;
+    vars["RSMPhotonTracingCB"]["gCellSize"] = cellSize;
+    vars["RSMPhotonTracingCB"]["gHashTableSize"] = 100000u;
+    vars["RSMPhotonTracingCB"]["gPhotonFluxScale"] = 1.0f;
+    
+    // Set RSM textures
+    vars["gRSMPosition"] = mpRSMPosition;
+    vars["gRSMNormal"] = mpRSMNormal;
+    vars["gRSMFlux"] = mpRSMFlux;
+    
+    // Set output buffers
+    vars["gPhotonBuffer"] = mpPhotonBuffer;
+    vars["gPhotonAppendBuffer"] = mpPhotonAppendBuffer;
+    vars["gPhotonCheckSum"] = mpPhotonCheckSumBuffer;
+    vars["gPhotonCellCounters"] = mpPhotonCellCounters;
+    
+    // Set scene
+    vars["gScene"] = mpScene->getParameterBlock();
+    
+    // Dispatch photon tracing (one thread per RSM pixel)
+    mpScene->raytrace(pRenderContext, mRSMPhotonTracingPass.mpProgram.get(), mRSMPhotonTracingPass.mpVars, 
+        uint3(totalPhotons, 1u, 1u));
+    
+    // UAV barrier
+    pRenderContext->uavBarrier(mpPhotonBuffer.get());
+}
+
+
+
 
 

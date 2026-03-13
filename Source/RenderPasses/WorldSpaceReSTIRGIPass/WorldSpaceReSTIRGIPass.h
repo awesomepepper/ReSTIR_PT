@@ -76,6 +76,11 @@ private:
     void TraceCausticPhotons(RenderContext* pRenderContext);
     void BuildPhotonHashGrid(RenderContext* pRenderContext);
     void UpdatePhotonResources();
+    
+    // RSM-based Caustics
+    void GenerateRSM(RenderContext* pRenderContext);
+    void TraceRSMPhotons(RenderContext* pRenderContext);
+    void UpdateRSMResources();
 
     ComputePass::SharedPtr mpFinalShadingPass;
     ComputePass::SharedPtr mpReflectTypePass;
@@ -90,6 +95,10 @@ private:
     // Caustic Photon Tracing Pass
     RtPass mPhotonTracingPass;
     ComputePass::SharedPtr mpBuildPhotonHashGridPass;
+    
+    // RSM-based Photon Tracing Pass
+    RtPass mRSMPhotonTracingPass;
+    ComputePass::SharedPtr mpRSMGenerationPass;
 
     /// <summary>
     /// changed required recompile
@@ -107,6 +116,10 @@ private:
         float photonInitialRadius = 0.15f; // Larger gather radius
         uint maxGatherPhotons = 500u;    // Max photons per gather
         float ppmAlpha = 0.7f;           // PPM radius reduction parameter (0.6-0.9)
+        
+        // RSM-based Caustics options
+        bool useRSMCaustics = false;     // Use RSM instead of random sampling
+        uint rsmResolution = 256u;       // RSM texture resolution (256x256 = 65536 photons)
     } mPtOptions;
 
     bool mOptionChanged = false;
@@ -133,6 +146,11 @@ private:
     // PPM per-pixel statistics buffer (for progressive accumulation)
     Texture::SharedPtr mpPPMStatisticsBuffer;   // RGBA32Float: R=accumulated photon count, G=radius², B,A=unused
     Texture::SharedPtr mpPPMFluxBuffer;         // RGBA32Float: accumulated flux (RGB) + total emitted photons (A)
+    
+    // RSM textures
+    Texture::SharedPtr mpRSMPosition;           // World position + depth
+    Texture::SharedPtr mpRSMNormal;             // World normal + material ID
+    Texture::SharedPtr mpRSMFlux;               // Flux (RGB) + valid flag
 
     Scene::SharedPtr mpScene;
     SampleGenerator::SharedPtr mpSampleGenerator;
