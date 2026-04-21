@@ -1,0 +1,144 @@
+# Generated WaterCaustic pyscene
+# Converted from Tungsten water-caustic scene (scene.json)
+# Original: Cornell box with water surface producing caustics
+# Reference render: TungstenRender.exr / TungstenRender.png
+
+# ============================================================
+# Camera
+# ============================================================
+camera = Camera()
+camera.position = float3(0.0, 0.990944, 6.83879)
+camera.target = float3(0.0, 0.990944, 0.0)
+camera.up = float3(0, 1, 0)
+camera.focalLength = 69.8359
+sceneBuilder.addCamera(camera)
+
+# ============================================================
+# Materials
+# ============================================================
+
+# Left wall - red diffuse
+LeftWall = Material('LeftWall')
+LeftWall.baseColor = float4(0.63, 0.065, 0.05, 1)
+LeftWall.roughness = 1.0
+
+# Right wall - green diffuse
+RightWall = Material('RightWall')
+RightWall.baseColor = float4(0.14, 0.45, 0.091, 1)
+RightWall.roughness = 1.0
+
+# Floor - grey diffuse
+Floor = Material('Floor')
+Floor.baseColor = float4(0.725, 0.71, 0.68, 1)
+Floor.roughness = 1.0
+
+# Ceiling - grey diffuse
+Ceiling = Material('Ceiling')
+Ceiling.baseColor = float4(0.725, 0.71, 0.68, 1)
+Ceiling.roughness = 1.0
+
+# Back wall - grey diffuse
+BackWall = Material('BackWall')
+BackWall.baseColor = float4(0.725, 0.71, 0.68, 1)
+BackWall.roughness = 1.0
+
+# Short box - grey diffuse
+ShortBox = Material('ShortBox')
+ShortBox.baseColor = float4(0.725, 0.71, 0.68, 1)
+ShortBox.roughness = 1.0
+
+# Tall box - grey diffuse
+TallBox = Material('TallBox')
+TallBox.baseColor = float4(0.725, 0.71, 0.68, 1)
+TallBox.roughness = 1.0
+
+# Area light - emissive (radiance computed from Tungsten power / area / pi)
+# Light = Material('Light')
+# Light.baseColor = float4(0, 0, 0, 1)
+# Light.emissiveColor = float3(541126.8, 381971.9, 127324.0)
+light = StandardMaterial('Light')
+light.emissiveColor = float3(17, 12, 4)
+light.emissiveFactor = 500
+
+# Water - dielectric with refraction (glass-like, ior=1.8)
+Water = Material('Water')
+Water.specularTransmission = 1.0
+Water.indexOfRefraction = 1.8
+Water.roughness = 0.0
+
+# ============================================================
+# Geometry - all transforms baked into OBJ files
+# ============================================================
+
+# --- Cornell box walls ---
+
+obj = TriangleMesh.createFromFile('models/Floor.obj')
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addTriangleMesh(obj, Floor),
+    sceneBuilder.addNode('Floor', Transform())
+)
+
+obj = TriangleMesh.createFromFile('models/Ceiling.obj')
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addTriangleMesh(obj, Ceiling),
+    sceneBuilder.addNode('Ceiling', Transform())
+)
+
+quadMesh = TriangleMesh.createQuad()
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('BackWall', Transform(scaling=float3(2, 2, 2), translation=float3(0, 1, -1), rotationEulerDeg=float3(90, 0, 0))),
+    sceneBuilder.addTriangleMesh(quadMesh, BackWall)
+)
+
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('RightWall', Transform(scaling=float3(2, 2, 2), translation=float3(1, 1, 0), rotationEulerDeg=float3(0, 0, 90))),
+    sceneBuilder.addTriangleMesh(quadMesh, RightWall)
+)
+
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('LeftWall', Transform(scaling=float3(2, 2, 2), translation=float3(-1, 1, 0), rotationEulerDeg=float3(0, 0, -90))),
+    sceneBuilder.addTriangleMesh(quadMesh, LeftWall)
+)
+
+# --- Boxes ---
+
+obj = TriangleMesh.createFromFile('models/ShortBox.obj')
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addTriangleMesh(obj, ShortBox),
+    sceneBuilder.addNode('ShortBox', Transform())
+)
+
+obj = TriangleMesh.createFromFile('models/TallBox.obj')
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addTriangleMesh(obj, TallBox),
+    sceneBuilder.addNode('TallBox', Transform())
+)
+
+# --- Light ---
+
+quadMesh = TriangleMesh.createQuad()
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Light', Transform(scaling=float3(0.05, 1, 0.05), translation=float3(0, 1.99, 0), rotationEulerDeg=float3(180, 0, 0))),
+    sceneBuilder.addTriangleMesh(quadMesh, light)
+)
+
+# --- Water meshes (dielectric surface producing caustics) ---
+
+obj = TriangleMesh.createFromFile('models/WaterSurface.obj')
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addTriangleMesh(obj, Water),
+    sceneBuilder.addNode('WaterSurface', Transform())
+)
+
+obj = TriangleMesh.createFromFile('models/WaterBottom.obj')
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addTriangleMesh(obj, Water),
+    sceneBuilder.addNode('WaterBottom', Transform())
+)
+
+# ============================================================
+# Reference: TungstenRender.exr is the reference render from
+# the Tungsten renderer for visual comparison.
+# To load as environment map (if needed):
+#   sceneBuilder.envMap = EnvMap('TungstenRender.exr')
+# ============================================================
