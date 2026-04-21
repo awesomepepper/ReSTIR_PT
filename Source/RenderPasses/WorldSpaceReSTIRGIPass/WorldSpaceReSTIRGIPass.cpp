@@ -724,9 +724,10 @@ void WorldSpaceReSTIRGIPass::GenerateRSM(RenderContext* pRenderContext)
     {
         Program::Desc desc;
         desc.addShaderLibrary(kRSMGenerationFilePath).setShaderModel(kShaderMode).csEntry("main");
-        desc.addTypeConformances(mpScene->getTypeConformances());
+        // desc.addTypeConformances(mpScene->getTypeConformances());
         
         Program::DefineList defines = mpScene->getSceneDefines();
+        if (mpSampleGenerator) defines.add(mpSampleGenerator->getDefines());
         mpRSMGenerationPass = ComputePass::create(desc, defines);
     }
     

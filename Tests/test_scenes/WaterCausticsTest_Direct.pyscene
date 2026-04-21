@@ -1,0 +1,90 @@
+# Water Caustics Test Scene - Direct Light Only (VISUAL DEBUG VERSION)
+
+# Materials
+waterMtl = StandardMaterial('Water')
+waterMtl.indexOfRefraction = 1.333
+waterMtl.specularTransmission = 1.0
+waterMtl.roughness = 0.0
+waterMtl.doubleSided = True
+waterMtl.baseColor = float4(0.9, 0.95, 1.0, 1.0) # Slight blue tint
+
+# Distinctly colored pool floor
+poolFloorMtl = StandardMaterial('PoolFloor')
+poolFloorMtl.baseColor = float4(0.2, 0.4, 0.8, 1.0) # Deep Blue
+poolFloorMtl.roughness = 0.2
+
+poolWallMtl = StandardMaterial('PoolWall')
+poolWallMtl.baseColor = float4(0.9, 0.9, 0.9, 1.0) # Off-white
+poolWallMtl.roughness = 0.5
+
+# Reference object material
+refMtl = StandardMaterial('Reference')
+refMtl.baseColor = float4(0.8, 0.1, 0.1, 1.0) # Red
+refMtl.roughness = 0.3
+
+# Emissive Material (Required for PPM Caustics)
+lightMtl = StandardMaterial('LightMtl')
+lightMtl.emissiveColor = float3(1.0, 1.0, 1.0)
+lightMtl.emissiveFactor = 10.0
+
+# Geometry
+quadMesh = TriangleMesh.createQuad()
+cubeMesh = TriangleMesh.createCube()
+# Falcor's quad is on the XY plane [-0.5, 0.5], normal +Z
+# We use a quad for the water surface. Since we don't need tessellation for now, standard quad is fine.
+waterMesh = TriangleMesh.createQuad(float2(2.0, 2.0)) 
+
+# Pool Container (2x2x1 box with open top and front)
+# Floor (Rotated to XZ plane, normal +Y)
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Pool_Floor', Transform(scaling=float3(2.0, 2.0, 1.0), rotationEulerDeg=float3(-90, 0, 0))),
+    sceneBuilder.addTriangleMesh(quadMesh, poolFloorMtl)
+)
+# Back wall (Placed at Z=-1, normal +Z)
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Pool_Back', Transform(scaling=float3(2.0, 1.0, 1.0), translation=float3(0, 0.5, -1.0))),
+    sceneBuilder.addTriangleMesh(quadMesh, poolWallMtl)
+)
+# Left wall (Placed at X=-1, normal +X)
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Pool_Left', Transform(scaling=float3(2.0, 1.0, 1.0), translation=float3(-1.0, 0.5, 0), rotationEulerDeg=float3(0, 90, 0))),
+    sceneBuilder.addTriangleMesh(quadMesh, poolWallMtl)
+)
+# Right wall (Placed at X=1, normal -X)
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Pool_Right', Transform(scaling=float3(2.0, 1.0, 1.0), translation=float3(1.0, 0.5, 0), rotationEulerDeg=float3(0, -90, 0))),
+    sceneBuilder.addTriangleMesh(quadMesh, poolWallMtl)
+)
+
+# Reference Cube at the bottom
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('RefCube', Transform(scaling=0.2, translation=float3(0, 0.1, -0.5))),
+    sceneBuilder.addTriangleMesh(cubeMesh, refMtl)
+)
+
+# Water Surface (Rotated to XZ plane, normal +Y)
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Water_Surface', Transform(scaling=float3(2.0, 2.0, 1.0), translation=float3(0, 0.8, 0), rotationEulerDeg=float3(-90, 0, 0))),
+    sceneBuilder.addTriangleMesh(waterMesh, waterMtl)
+)
+
+# Lighting
+# Strong directional light pointing down
+dirLight = DirectionalLight('DirectLight')
+dirLight.intensity = float3(5.0, 5.0, 5.0)
+dirLight.direction = float3(0.2, -1.0, 0.2)
+sceneBuilder.addLight(dirLight)
+
+# Emissive Area Light (Required for PPM)
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('AreaLight', Transform(scaling=0.4, translation=float3(0, 2.0, 0), rotationEulerDeg=float3(180, 0, 0))),
+    sceneBuilder.addTriangleMesh(quadMesh, lightMtl)
+)
+
+# Camera - Positioned to look into the pool from an angle
+camera = Camera()
+camera.position = float3(0.0, 2.5, 3.0)
+camera.target = float3(0, 0, 0)
+camera.up = float3(0, 1, 0)
+camera.focalLength = 35.0
+sceneBuilder.addCamera(camera)

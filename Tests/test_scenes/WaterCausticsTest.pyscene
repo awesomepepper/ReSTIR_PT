@@ -1,0 +1,132 @@
+# PPM Caustics Test Scene - SDS Path (Specular-Diffuse-Specular)
+# 基于标准 Cornell Box，添加玻璃球包裹漫反射盒子
+
+# ============== 材质定义 ==============
+
+# 光源
+light = StandardMaterial('Light')
+light.emissiveColor = float3(17, 12, 4)
+light.emissiveFactor = 5
+
+# 地面
+floor = StandardMaterial('Floor')
+floor.baseColor = float4(0.725, 0.71, 0.68, 1.0)
+floor.roughness = 0.5
+
+# 后墙
+backWall = StandardMaterial('Back Wall')
+backWall.baseColor = float4(0.725, 0.71, 0.68, 1.0)
+backWall.roughness = 0.5
+
+# 天花板
+ceiling = StandardMaterial('Ceiling')
+ceiling.baseColor = float4(0.725, 0.71, 0.68, 1.0)
+ceiling.roughness = 0.5
+
+# 左墙 - 红色
+leftWall = StandardMaterial('Left Wall')
+leftWall.baseColor = float4(0.63, 0.065, 0.05, 1.0)
+leftWall.roughness = 0.5
+
+# 右墙 - 绿色
+rightWall = StandardMaterial('Right Wall')
+rightWall.baseColor = float4(0.14, 0.45, 0.091, 1.0)
+rightWall.roughness = 0.5
+
+# 大盒子
+largeBox = StandardMaterial('Large Box')
+largeBox.baseColor = float4(0.725, 0.71, 0.68, 1.0)
+largeBox.roughness = 0.5
+
+# 小盒子
+smallBox = StandardMaterial('Small Box')
+smallBox.baseColor = float4(0.725, 0.71, 0.68, 1.0)
+smallBox.roughness = 0.5
+
+# 玻璃材质
+glassMat = StandardMaterial('Glass')
+glassMat.baseColor = float4(1.0, 1.0, 1.0, 1.0)
+glassMat.roughness = 0.0
+glassMat.metallic = 0.0
+glassMat.specularTransmission = 1.0
+glassMat.indexOfRefraction = 1.5
+
+# 内部盒子 - 白色漫反射
+innerBox = StandardMaterial('Inner Box')
+innerBox.baseColor = float4(0.9, 0.9, 0.9, 1.0)
+innerBox.roughness = 0.5
+
+# ============== 几何体 ==============
+
+quadMesh = TriangleMesh.createQuad()
+cubeMesh = TriangleMesh.createCube()
+sphereMesh = TriangleMesh.createSphere(radius=1.0, segmentsU=64, segmentsV=64)
+
+# ============== Cornell Box 墙壁 ==============
+
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Floor', Transform(scaling=float3(0.55, 1.0, 0.56))),
+    sceneBuilder.addTriangleMesh(quadMesh, floor)
+)
+
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Ceiling', Transform(scaling=float3(0.55, 1.0, 0.56), translation=float3(0, 0.55, 0), rotationEulerDeg=float3(180, 0, 0))),
+    sceneBuilder.addTriangleMesh(quadMesh, ceiling)
+)
+
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Back Wall', Transform(scaling=float3(0.55, 1.0, 0.56), translation=float3(0, 0.275, -0.275), rotationEulerDeg=float3(90, 0, 0))),
+    sceneBuilder.addTriangleMesh(quadMesh, backWall)
+)
+
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Left Wall', Transform(scaling=float3(0.55, 1.0, 0.56), translation=float3(-0.275, 0.275, 0), rotationEulerDeg=float3(0, 0, -90))),
+    sceneBuilder.addTriangleMesh(quadMesh, leftWall)
+)
+
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Right Wall', Transform(scaling=float3(0.55, 1.0, 0.56), translation=float3(0.275, 0.275, 0), rotationEulerDeg=float3(0, 0, 90))),
+    sceneBuilder.addTriangleMesh(quadMesh, rightWall)
+)
+
+# ============== 盒子 ==============
+
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Large Box', Transform(scaling=float3(0.165, 0.33, 0.165), translation=float3(-0.093, 0.165, -0.071), rotationEuler=float3(0, -1.27, 0))),
+    sceneBuilder.addTriangleMesh(cubeMesh, largeBox)
+)
+
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Small Box', Transform(scaling=float3(0.165, 0.165, 0.165), translation=float3(0.09, 0.0825, 0.111), rotationEuler=float3(0, -0.29, 0))),
+    sceneBuilder.addTriangleMesh(cubeMesh, smallBox)
+)
+
+# ============== SDS 结构: 玻璃球包裹漫反射盒子 ==============
+
+# 玻璃球 - 放在小盒子上方
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Glass Sphere', Transform(scaling=float3(0.08, 0.08, 0.08), translation=float3(0.09, 0.25, 0.111))),
+    sceneBuilder.addTriangleMesh(sphereMesh, glassMat)
+)
+
+# 内部漫反射盒子 - 在玻璃球内部
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Inner Box', Transform(scaling=float3(0.03, 0.03, 0.03), translation=float3(0.09, 0.25, 0.111), rotationEulerDeg=float3(0, 45, 0))),
+    sceneBuilder.addTriangleMesh(cubeMesh, innerBox)
+)
+
+# ============== 光源 ==============
+
+sceneBuilder.addMeshInstance(
+    sceneBuilder.addNode('Light', Transform(scaling=0.13, translation=float3(0, 0.549, 0), rotationEulerDeg=float3(180, 0, 0))),
+    sceneBuilder.addTriangleMesh(quadMesh, light)
+)
+
+# ============== 相机 ==============
+
+camera = Camera()
+camera.position = float3(0, 0.28, 1.2)
+camera.target = float3(0, 0.28, 0)
+camera.up = float3(0, 1, 0)
+camera.focalLength = 35.0
+sceneBuilder.addCamera(camera)

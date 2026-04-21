@@ -119,7 +119,10 @@ graph_PPM_CausticsTest = render_graph_PPM_CausticsTest()
 m.addGraph(graph_PPM_CausticsTest)
 
 # Load the Water Caustics test scene
-m.loadScene('E:/ReSTIR/ReSTIR_PT/Media/TestScenes/WaterCausticsTest.pyscene')
+# m.loadScene('E:/ReSTIR/ReSTIR_PT/Media/TestScenes/WaterCausticsTest.pyscene')
+# m.loadScene('C:/code/ReSTIR/ReSTIR_PT_LinDaqi/ReSTIR_PT/Tests/test_scenes/WaterCausticsTest_Env.pyscene')
+# m.loadScene('C:/code/ReSTIR/ReSTIR_PT_LinDaqi/ReSTIR_PT/Tests/test_scenes/WaterCausticsTest_Direct.pyscene')
+m.loadScene('C:/code/ReSTIR/ReSTIR_PT_LinDaqi/ReSTIR_PT/Tests/test_scenes/cornell_box_bunny.pyscene')
 
 # ============== Usage Instructions ==============
 # 

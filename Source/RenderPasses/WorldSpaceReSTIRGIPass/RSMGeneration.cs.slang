@@ -5,6 +5,7 @@
  **************************************************************************/
 
 import Scene.Raytracing;
+import Scene.RaytracingInline;
 import Scene.Intersection;
 import Scene.Shading;
 import Utils.Math.MathHelpers;
@@ -68,20 +69,24 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     ray.TMax = 100.0f;
     
     // Trace ray from light into scene
+    SceneRayQuery<0> rayQuery;
     HitInfo hit;
     float hitT;
     
-    if (traceRay(ray, hit, hitT, RAY_FLAG_NONE, 0xFF))
+    if (rayQuery.traceRay(ray, hit, hitT, RAY_FLAG_NONE, 0xFF))
     {
-        // Get vertex data at hit point
-        VertexData v = gScene.getVertexData(hit);
-        uint materialID = gScene.getMaterialID(hit.getInstanceID());
-        
-        // Prepare shading data
-        ShadingData sd = gScene.materials.prepareShadingData(v, materialID, -rayDir, 0);
-        
-        // Calculate flux at this point
-        // For Lambertian area light: Le * cos(theta_light) * cos(theta_surface) / distance^2
+        if (hit.getType() == HitType::Triangle)
+        {
+            const TriangleHit triangleHit = hit.getTriangleHit();
+            // Get vertex data at hit point
+            VertexData v = gScene.getVertexData(triangleHit);
+            uint materialID = gScene.getMaterialID(triangleHit.instanceID);
+            
+            // Prepare shading data
+            ShadingData sd = prepareShadingData(v, materialID, gScene.materials[materialID], gScene.materialResources[materialID], -rayDir, 0.f);
+            
+            // Calculate flux at this point
+            // For Lambertian area light: Le * cos(theta_light) * cos(theta_surface) / distance^2
         // But for RSM, we store the flux that would be reflected/transmitted
         float cosLightAngle = max(dot(-rayDir, gLightDirection), 0.0f);
         float cosSurfaceAngle = max(dot(-rayDir, sd.N), 0.0f);
@@ -98,5 +103,6 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         gRSMPosition[pixel] = float4(sd.posW, hitT);
         gRSMNormal[pixel] = float4(sd.N, float(materialID));
         gRSMFlux[pixel] = float4(flux, 1.0f); // w=1 indicates valid pixel
+        }
     }
 }
