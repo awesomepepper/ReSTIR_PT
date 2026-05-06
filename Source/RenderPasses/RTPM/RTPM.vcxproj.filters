@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="RTPM.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="RTPM.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ShaderSource Include="PMHashFunction.slang" />
+    <ShaderSource Include="PMCollect.cs.slang" />
+    <ShaderSource Include="PMVisual.cs.slang" />
+    <ShaderSource Include="PMGenerate.rt.slang" />
+  </ItemGroup>
+</Project>
